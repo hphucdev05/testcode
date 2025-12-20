@@ -79,15 +79,11 @@ battleship-multiplayer/
 - Chơi trên cùng máy hoặc cùng mạng LAN. Nếu chơi qua mạng, sửa `SERVER_IP` trong `client.py` thành IP của máy chạy server.
 - Không xóa thư mục `assets/ships/` – chứa tất cả tài nguyên hình ảnh.
 
-**Enjoy the game và bắn nhau tung tóe đi!** 🚀
+**Enjoy the game!
 
 ---
 ```
 
-### Hướng dẫn nhanh
-- Copy toàn bộ nội dung trên → dán đè vào file `README.md` trong repo của bạn.
-- Tạo thư mục `screenshots/` → chụp ảnh game → lưu vào đó với tên như trên → commit & push.
-- Ảnh sẽ hiển thị đẹp ngay trên GitHub!
 
 README này đã **đẹp, rõ ràng, chuyên nghiệp** và đầy đủ – bạn chỉ cần thêm ảnh screenshot là hoàn hảo 100%.
 
