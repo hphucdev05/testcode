@@ -23,8 +23,9 @@ Hỗ trợ 2 người chơi trên cùng máy (localhost) hoặc cùng mạng LAN
 ## Cài đặt
 
 ```bash
-git clone https://github.com/username/battleship-multiplayer.git
-cd battleship-multiplayer
+git clone https://github.com/hphucdev05/testcode.git
+cd testcode
+git checkout final-version
 pip install -r requirements.txt
 ```
 
