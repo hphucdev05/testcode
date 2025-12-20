@@ -60,49 +60,47 @@ def handle_client(conn, addr):
                             if action == "create_room":
                                 room_id = str(random.randint(1000, 9999))
                                 rooms[room_id] = {
+                                    "type": "private",  # ← Phòng private
                                     "players": { player_id: {"conn": conn, "ships": [], "hits_left": 0} },
                                     "turn": None,
                                     "state": "waiting"
                                 }
                                 current_room = room_id
-                                send_msg(conn, {"action": "room_created", "room_id": room_id})
+                                send_msg(conn, {"action": "room_created", "room_id": room_id, "room_type": "private"})
 
                             elif action == "join_room":
                                 rid = msg.get("room_id")
                                 if rid in rooms and len(rooms[rid]["players"]) < 2:
                                     rooms[rid]["players"][player_id] = {"conn": conn, "ships": [], "hits_left": 0}
                                     current_room = rid
-                                    send_msg(conn, {"action": "match_found", "room_id": rid})
+                                    room_type = rooms[rid].get("type", "public")
+                                    send_msg(conn, {"action": "match_found", "room_id": rid, "room_type": room_type})
                                     broadcast(rid, {"action": "match_found", "room_id": rid})
                                 else:
-                                    send_msg(conn, {"action": "error", "msg": "Phong day hoac khong ton tai"})
+                                    send_msg(conn, {"action": "error", "msg": "Phòng đầy hoặc không tồn tại"})
 
                             elif action == "random_match":
                                 found = False
+                                # Chỉ tìm phòng PUBLIC có ít hơn 2 người và waiting
                                 for rid, r_data in rooms.items():
-                                    if len(r_data["players"]) < 2:  # Chỉ cần < 2 người, không cần check state
+                                    if r_data.get("type", "public") == "public" and len(r_data["players"]) < 2 and r_data["state"] == "waiting":
                                         r_data["players"][player_id] = {"conn": conn, "ships": [], "hits_left": 0}
                                         current_room = rid
-                                        send_msg(conn, {"action": "match_found", "room_id": rid})
+                                        send_msg(conn, {"action": "match_found", "room_id": rid, "room_type": "public"})
                                         broadcast(rid, {"action": "match_found", "room_id": rid})
-                                        # Reset state phòng về waiting để sẵn sàng ván mới
-                                        r_data["state"] = "waiting"
-                                        r_data["turn"] = None
-                                        # Reset ships và hits_left cho tất cả (an toàn)
-                                        for p in r_data["players"].values():
-                                            p["ships"] = []
-                                            p["hits_left"] = 0
                                         found = True
                                         break
                                 if not found:
+                                    # Tạo phòng PUBLIC mới
                                     rid = str(random.randint(1000, 9999))
                                     rooms[rid] = {
+                                        "type": "public",  # ← Phòng public
                                         "players": { player_id: {"conn": conn, "ships": [], "hits_left": 0} },
                                         "turn": None,
                                         "state": "waiting"
                                     }
                                     current_room = rid
-                                    send_msg(conn, {"action": "room_created", "room_id": rid})
+                                    send_msg(conn, {"action": "room_created", "room_id": rid, "room_type": "public"})
 
                             elif action == "ready":
                                 if current_room:
