@@ -58,7 +58,7 @@ notification_text = ""
 notification_timer = 0 
 notif_color = RED
 total_hits_on_enemy = 0 
-
+is_private_room = False  # thêm gần các biến global khác
 # --- LOAD ASSETS ---
 assets = {}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -133,6 +133,17 @@ def load_assets():
     else: 
         assets['miss'] = create_fallback(GRID_SIZE, GRID_SIZE, BLUE)
         assets['miss_img'] = assets['miss']
+    lock_closed_path = os.path.join(ASSETS_DIR, "ships", "lock_closed.png")
+    if os.path.exists(lock_closed_path):
+        assets['lock_closed'] = pygame.transform.scale(pygame.image.load(lock_closed_path).convert_alpha(), (30, 30))
+    else:
+        assets['lock_closed'] = create_fallback(30, 30, RED)  # fallback nếu thiếu ảnh
+
+    lock_open_path = os.path.join(ASSETS_DIR, "ships", "lock_open.png")
+    if os.path.exists(lock_open_path):
+        assets['lock_open'] = pygame.transform.scale(pygame.image.load(lock_open_path).convert_alpha(), (30, 30))
+    else:
+        assets['lock_open'] = create_fallback(30, 30, GREEN)
 
 load_assets()
 
@@ -323,15 +334,29 @@ def draw_game_ui():
         room_label = f"ROOM ID: {net.room_id}"
         font_room = pygame.font.SysFont('arial', 28, bold=True)
         room_surf = font_room.render(room_label, True, ORANGE)
-        bg_w = room_surf.get_width() + 40
+        
+        # Tính bg_w, bg_h TRƯỚC
+        bg_w = room_surf.get_width() + 100  # +100 để chứa icon
         bg_h = room_surf.get_height() + 14
+        
+        # Tạo bg_rect TRƯỚC khi dùng
         bg_rect = pygame.Rect(0, 0, bg_w, bg_h)
         bg_rect.center = (WIDTH // 2, 40)
+        
+        # Vẽ background trước
         pygame.draw.rect(screen, BLACK, bg_rect, border_radius=15)
         pygame.draw.rect(screen, WHITE, bg_rect, 2, border_radius=15)
+        
+        # Vẽ icon ổ khóa (bây giờ bg_rect đã tồn tại)
+        lock_img = assets.get('lock_closed') if is_private_room else assets.get('lock_open')
+        if lock_img:
+            icon_x = bg_rect.left + 20
+            icon_y = bg_rect.centery - lock_img.get_height() // 2
+            screen.blit(lock_img, (icon_x, icon_y))
+        
+        # Vẽ text ROOM ID
         txt_rect = room_surf.get_rect(center=bg_rect.center)
         screen.blit(room_surf, txt_rect)
-
     status = ""
     color = WHITE
     if current_state == STATE_LOBBY:
@@ -419,7 +444,7 @@ def main():
     global show_input_bar, error_message, my_board, enemy_board, placed_ships
     global notification_timer, total_hits_on_enemy
     global notification_text, notif_color  # ← THÊM DÒNG NÀY
-    
+    global is_private_room  # ← THÊM DÒNG NÀY (quan trọng nhất!)
     
     show_input_bar = False
     input_room_id = ""
@@ -650,9 +675,11 @@ def main():
                 if current_state == STATE_MENU:
                     if btn_create and btn_create.collidepoint(mx, my):
                         net.send({"action": "create_room"})
+                        is_private_room = True  # ← Private → 🔒
                         show_input_bar = False
                     elif btn_rand and btn_rand.collidepoint(mx, my):
                         net.send({"action": "random_match"})
+                        is_private_room = False  # ← Public → 🔓
                         show_input_bar = False
                     elif btn_join and btn_join.collidepoint(mx, my):
                         if not show_input_bar:
