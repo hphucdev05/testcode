@@ -1,0 +1,16 @@
+@startuml
+participant Sender
+participant "Signaling Server" as Server
+participant Receiver
+
+Sender -> Server: Send "file:offer" (name, size, id)
+Server -> Receiver: Forward "file:offer"
+Receiver -> Receiver: Show "Accept" button
+Receiver -> Server: Send "file:request" (id)
+Server -> Sender: Forward "file:request"
+Sender -> Receiver: Send File Chunks via P2P DataChannel
+Receiver -> Receiver: Update Progress Bar
+Sender -> Server: Send "file:complete"
+Server -> Receiver: Forward "file:complete"
+Receiver -> Receiver: Show "Save" button
+@enduml

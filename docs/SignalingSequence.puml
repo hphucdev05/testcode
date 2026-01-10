@@ -1,0 +1,25 @@
+@startuml
+participant "User A (Initiator)" as A
+participant "Signaling Server\n(Socket.io)" as Server
+participant "User B (Receiver)" as B
+
+A -> Server: join_room (roomId, email)
+Server -> B: "user:joined" (User A info)
+
+B -> Server: "user:call" (SDP Offer)
+note right of B: Tạo WebRTC Offer
+Server -> A: "incoming:call" (SDP Offer)
+
+A -> A: setRemoteDescription(Offer)
+A -> A: createAnswer()
+A -> Server: "call:accepted" (SDP Answer)
+Server -> B: "call:accepted" (SDP Answer)
+
+B -> B: setRemoteDescription(Answer)
+
+== Kết nối P2P Thiết lập ==
+
+A <-> B: Trao đổi Media Stream (Video/Audio)
+A <-> B: Mở Data Channel (Chat/File)
+
+@enduml
