@@ -49,15 +49,22 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
 });
 
 // Component hiển thị Thanh Progress
-const ProgressItem = ({ id, name, progress, type, onCancel }) => (
-  <div className={`progress-item ${type}`}>
+const ProgressItem = ({ id, name, progress, type, isPaused, onPause, onCancel }) => (
+  <div className={`progress-item ${type} ${isPaused ? 'paused' : ''}`}>
     <div className="progress-header">
       <small>{type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}</small>
-      <button className="btn-close-mini" onClick={onCancel} title="Stop Transfer">×</button>
+      <div className="progress-actions">
+        <button className="btn-pause-mini" onClick={onPause} title={isPaused ? "Resume" : "Pause"}>
+          {isPaused ? '▶️' : '⏸️'}
+        </button>
+        <button className="btn-close-mini" onClick={onCancel} title="Stop Transfer">×</button>
+      </div>
     </div>
     <div className="progress-item-inner">
-      <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }}></div></div>
-      <span>{progress}%</span>
+      <div className="progress-bar">
+        <div className={`progress-fill ${isPaused ? 'paused' : ''}`} style={{ width: `${progress}%` }}></div>
+      </div>
+      <span>{progress}% {isPaused && "(Paused)"}</span>
     </div>
   </div>
 );
@@ -81,6 +88,9 @@ const Room = () => {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [pausedState, setPausedState] = useState({}); // Tracking pause state for UI
+
+  const pausedTransfers = useRef(new Set());
 
   const peersRef = useRef({});
   const initialized = useRef(false);
@@ -227,18 +237,25 @@ const Room = () => {
               activeTransfers.current.add(msg.fileId);
               sendFileInChunks(peer, file, msg.fileId);
             }
+          } else if (msg.type === 'file:pause') {
+            pausedTransfers.current.add(msg.fileId);
+            setPausedState(prev => ({ ...prev, [msg.fileId]: true }));
+          } else if (msg.type === 'file:resume') {
+            pausedTransfers.current.delete(msg.fileId);
+            setPausedState(prev => ({ ...prev, [msg.fileId]: false }));
           } else if (msg.type === 'file:cancel') {
             activeTransfers.current.delete(msg.fileId);
+            pausedTransfers.current.delete(msg.fileId);
             setFiles(prev => prev.filter(f => f.id !== msg.fileId));
             setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
             setUploadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
             delete inboundBuffersRef.current[msg.fileId];
-            console.warn("🚫 Transfer canceled by remote peer");
           } else if (msg.type === 'file:complete') {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
-              // BẮT BUỘC NGƯỜI NHẬN PHẢI ĐỢI ĐỦ 6 GIÂY
               const checkAndFinish = () => {
+                if (!inboundBuffersRef.current[msg.fileId]) return; // Stop if canceled
+
                 const elapsed = Date.now() - buffer.startTime;
                 if (elapsed >= 6000) {
                   const blob = new Blob(buffer.chunks);
@@ -247,8 +264,10 @@ const Room = () => {
                   setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
                   delete inboundBuffersRef.current[msg.fileId];
                 } else {
-                  const p = Math.round((elapsed / 6000) * 100);
-                  setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
+                  if (!pausedTransfers.current.has(msg.fileId)) {
+                    const p = Math.round((elapsed / 6000) * 100);
+                    setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
+                  }
                   setTimeout(checkAndFinish, 100);
                 }
               };
@@ -257,12 +276,15 @@ const Room = () => {
           }
         } catch (err) { console.log("File channel raw msg:", e.data); }
       } else {
-        // Tìm buffer đang nhận phù hợp (thường là cái đầu tiên)
-        const activeFileId = Object.keys(inboundBuffersRef.current)[0];
-        if (activeFileId) {
+        const activeFileId = Object.keys(inboundBuffersRef.current).find(id => {
+          const b = inboundBuffersRef.current[id];
+          return b.receivedSize < b.size;
+        }) || Object.keys(inboundBuffersRef.current)[0];
+
+        if (activeFileId && !pausedTransfers.current.has(activeFileId)) {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
-          buffer.receivedSize += e.data.byteLength; // QUAN TRỌNG: Phải cộng dồn kích thước!
+          buffer.receivedSize += e.data.byteLength;
 
           const realProgress = (buffer.receivedSize / buffer.size) * 100;
           const elapsed = Date.now() - (buffer.startTime || Date.now());
@@ -274,8 +296,26 @@ const Room = () => {
     };
   };
 
+  const togglePauseFile = (fileId, peerId) => {
+    const isPaused = pausedTransfers.current.has(fileId);
+    const peer = peersRef.current[peerId];
+    if (peer && peer.fileChannel.readyState === "open") {
+      peer.fileChannel.send(JSON.stringify({ type: isPaused ? 'file:resume' : 'file:pause', fileId }));
+    }
+    if (isPaused) {
+      pausedTransfers.current.delete(fileId);
+      setPausedState(prev => ({ ...prev, [fileId]: false }));
+    } else {
+      pausedTransfers.current.add(fileId);
+      setPausedState(prev => ({ ...prev, [fileId]: true }));
+    }
+  };
+
   const handleCancelFile = (fileId, peerId) => {
     activeTransfers.current.delete(fileId);
+    pausedTransfers.current.delete(fileId);
+    setPausedState(prev => { const n = { ...prev }; delete n[fileId]; return n; });
+
     const peer = peersRef.current[peerId];
     if (peer && peer.fileChannel.readyState === "open") {
       peer.fileChannel.send(JSON.stringify({ type: 'file:cancel', fileId }));
@@ -294,6 +334,12 @@ const Room = () => {
     try {
       while (true) {
         if (!activeTransfers.current.has(fileId)) break;
+
+        if (pausedTransfers.current.has(fileId)) {
+          await new Promise(r => setTimeout(r, 500));
+          continue;
+        }
+
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -309,13 +355,16 @@ const Room = () => {
         else await new Promise(r => setTimeout(r, 10));
       }
 
-      // Vòng lặp cưỡng bức chạy đủ 6 giây (6000ms)
       while (activeTransfers.current.has(fileId)) {
+        if (pausedTransfers.current.has(fileId)) {
+          await new Promise(r => setTimeout(r, 500));
+          continue;
+        }
         const elapsed = Date.now() - startTime;
         if (elapsed >= 6000) break;
         const timeProgress = Math.round((elapsed / 6000) * 100);
         setUploadProgress(prev => ({ ...prev, [fileId]: timeProgress }));
-        await new Promise(r => setTimeout(r, 100)); // Cập nhật bar mỗi 0.1s
+        await new Promise(r => setTimeout(r, 100));
       }
 
       if (activeTransfers.current.has(fileId)) {
@@ -497,6 +546,8 @@ const Room = () => {
                     name={f?.name || "File"}
                     progress={p}
                     type="upload"
+                    isPaused={pausedState[fileId]}
+                    onPause={() => togglePauseFile(fileId, f?.peerId)}
                     onCancel={() => f && handleCancelFile(fileId, f.peerId)}
                   />
                 );
@@ -509,6 +560,8 @@ const Room = () => {
                     name={f?.name || "File"}
                     progress={p}
                     type="download"
+                    isPaused={pausedState[fileId]}
+                    onPause={() => togglePauseFile(fileId, f?.peerId)}
                     onCancel={() => f && handleCancelFile(fileId, f.peerId)}
                   />
                 );
