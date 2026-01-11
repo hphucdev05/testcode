@@ -268,13 +268,15 @@ const Room = () => {
       }
     };
 
-    const handleUserLeft = ({ id }) => {
-      console.log("User left:", id);
+    const handleUserLeft = ({ id, email }) => {
+      console.log(`👋 User left: ${email || id}`);
       setRemoteStreams(prev => prev.filter(p => p.id !== id));
       if (peersRef.current[id]) {
         peersRef.current[id].peer.close();
         delete peersRef.current[id];
       }
+      // Nếu người bị xóa đang được ghim, chuyển về ghim local
+      setPinnedId(prev => prev === id ? 'local' : prev);
     };
 
     socket.on("user:joined", handleUserJoined);

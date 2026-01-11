@@ -31,21 +31,22 @@ io.on("connection", (socket) => {
   socket.on("room:join", (data) => {
     const { email, room } = data;
 
-    // For local testing: Allow same email in multiple tabs without disconnecting
-    /*
+    // Xử lý nạp dữ liệu mượt mà khi refresh (Tránh Ghost Users)
     const oldSocketId = emailToSocketIdMap.get(email);
     if (oldSocketId && oldSocketId !== socket.id) {
-      console.log(`🔄 User ${email} reconnecting. Old socket: ${oldSocketId}`);
+      console.log(`🔄 Cleaning up ghost user: ${email}`);
       const oldRoom = socketIdToRoomMap.get(oldSocketId);
       if (oldRoom) {
-        io.to(oldRoom).emit("user:left", { id: oldSocketId, email });
-        const oldSocket = io.sockets.sockets.get(oldSocketId);
-        if (oldSocket) oldSocket.disconnect(true);
+        socket.to(oldRoom).emit("user:left", { id: oldSocketId, email });
       }
       socketIdToEmailMap.delete(oldSocketId);
       socketIdToRoomMap.delete(oldSocketId);
     }
-    */
+
+    // Cập nhật mapping mới
+    emailToSocketIdMap.set(email, socket.id);
+    socketIdToEmailMap.set(socket.id, email);
+    socketIdToRoomMap.set(socket.id, room);
 
     // Check if socket is already in another room
     const currentRoom = socketIdToRoomMap.get(socket.id);
