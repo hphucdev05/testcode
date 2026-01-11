@@ -228,37 +228,41 @@ const Room = () => {
 
     try {
       while (true) {
-        // KIỂM TRA LỆNH HỦY TRONG MỖI VÒNG LẶP
-        if (!activeTransfers.current.has(fileId)) {
-          console.log("🛑 Sending mission aborted!");
-          break;
-        }
-
+        if (!activeTransfers.current.has(fileId)) break;
         const { done, value } = await reader.read();
         if (done) break;
 
         peer.fileChannel.send(value);
         sent += value.byteLength;
 
-        const realProgress = Math.round((sent / file.size) * 100);
-        const elapsed = (Date.now() - startTime) / 6000;
-        const timeProgress = Math.min(Math.round(elapsed * 100), 100);
+        const realProgress = (sent / file.size) * 100;
+        const elapsed = Date.now() - startTime;
+        const timeProgress = (elapsed / 6000) * 100;
+        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round(realProgress), Math.round(timeProgress)) }));
 
-        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(realProgress, timeProgress) }));
+        if (file.size < 500000) await new Promise(r => setTimeout(r, 100));
+        else await new Promise(r => setTimeout(r, 10));
+      }
 
-        // Tạm nghỉ một chút nếu gửi quá nhanh để kịp demo 6s
-        if (file.size < 1000000) await new Promise(r => setTimeout(r, 20));
+      // Vòng lặp cưỡng bức chạy đủ 6 giây (6000ms)
+      while (activeTransfers.current.has(fileId)) {
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= 6000) break;
+        const timeProgress = Math.round((elapsed / 6000) * 100);
+        setUploadProgress(prev => ({ ...prev, [fileId]: timeProgress }));
+        await new Promise(r => setTimeout(r, 100)); // Cập nhật bar mỗi 0.1s
       }
 
       if (activeTransfers.current.has(fileId)) {
+        setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
         setTimeout(() => {
           setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
           activeTransfers.current.delete(fileId);
-        }, 2000);
+        }, 1500);
       }
     } catch (err) {
-      console.error("Chunk send error:", err);
+      console.error("Transmission error:", err);
     }
   };
 
