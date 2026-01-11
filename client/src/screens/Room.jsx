@@ -49,22 +49,15 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
 });
 
 // Component hiển thị Thanh Progress
-const ProgressItem = ({ id, name, progress, type, isPaused, onPause, onCancel }) => (
-  <div className={`progress-item ${type} ${isPaused ? 'paused' : ''}`}>
+const ProgressItem = ({ id, name, progress, type, onCancel }) => (
+  <div className={`progress-item ${type}`}>
     <div className="progress-header">
       <small>{type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}</small>
-      <div className="progress-actions">
-        <button className="btn-pause-mini" onClick={onPause} title={isPaused ? "Resume" : "Pause"}>
-          {isPaused ? '▶️' : '⏸️'}
-        </button>
-        <button className="btn-close-mini" onClick={onCancel} title="Stop Transfer">×</button>
-      </div>
+      <button className="btn-close-mini" onClick={onCancel} title="Stop Transfer">×</button>
     </div>
     <div className="progress-item-inner">
-      <div className="progress-bar">
-        <div className={`progress-fill ${isPaused ? 'paused' : ''}`} style={{ width: `${progress}%` }}></div>
-      </div>
-      <span>{progress}% {isPaused && "(Paused)"}</span>
+      <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }}></div></div>
+      <span>{progress}%</span>
     </div>
   </div>
 );
@@ -88,9 +81,6 @@ const Room = () => {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
-  const [pausedState, setPausedState] = useState({}); // Tracking pause state for UI
-
-  const pausedTransfers = useRef(new Set());
 
   const peersRef = useRef({});
   const initialized = useRef(false);
@@ -240,15 +230,8 @@ const Room = () => {
             } else {
               console.error("❌ File not found in outbound cache!");
             }
-          } else if (msg.type === 'file:pause') {
-            pausedTransfers.current.add(msg.fileId);
-            setPausedState(prev => ({ ...prev, [msg.fileId]: true }));
-          } else if (msg.type === 'file:resume') {
-            pausedTransfers.current.delete(msg.fileId);
-            setPausedState(prev => ({ ...prev, [msg.fileId]: false }));
           } else if (msg.type === 'file:cancel') {
             activeTransfers.current.delete(msg.fileId);
-            pausedTransfers.current.delete(msg.fileId);
             setFiles(prev => prev.filter(f => f.id !== msg.fileId));
             setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
             setUploadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
@@ -257,7 +240,7 @@ const Room = () => {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
               const checkAndFinish = () => {
-                if (!inboundBuffersRef.current[msg.fileId]) return; // Stop if canceled
+                if (!inboundBuffersRef.current[msg.fileId]) return;
 
                 const elapsed = Date.now() - buffer.startTime;
                 if (elapsed >= 6000) {
@@ -267,10 +250,8 @@ const Room = () => {
                   setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
                   delete inboundBuffersRef.current[msg.fileId];
                 } else {
-                  if (!pausedTransfers.current.has(msg.fileId)) {
-                    const p = Math.round((elapsed / 6000) * 100);
-                    setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
-                  }
+                  const p = Math.round((elapsed / 6000) * 100);
+                  setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
                   setTimeout(checkAndFinish, 100);
                 }
               };
@@ -284,7 +265,7 @@ const Room = () => {
           return b.receivedSize < b.size;
         }) || Object.keys(inboundBuffersRef.current)[0];
 
-        if (activeFileId && !pausedTransfers.current.has(activeFileId)) {
+        if (activeFileId) {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
           buffer.receivedSize += e.data.byteLength;
@@ -299,26 +280,10 @@ const Room = () => {
     };
   };
 
-  const togglePauseFile = (fileId, peerId) => {
-    const isPaused = pausedTransfers.current.has(fileId);
-    const peer = peersRef.current[peerId];
-    if (peer && peer.fileChannel.readyState === "open") {
-      peer.fileChannel.send(JSON.stringify({ type: isPaused ? 'file:resume' : 'file:pause', fileId }));
-    }
-    if (isPaused) {
-      pausedTransfers.current.delete(fileId);
-      setPausedState(prev => ({ ...prev, [fileId]: false }));
-    } else {
-      pausedTransfers.current.add(fileId);
-      setPausedState(prev => ({ ...prev, [fileId]: true }));
-    }
-  };
+
 
   const handleCancelFile = (fileId, peerId) => {
     activeTransfers.current.delete(fileId);
-    pausedTransfers.current.delete(fileId);
-    setPausedState(prev => { const n = { ...prev }; delete n[fileId]; return n; });
-
     const peer = peersRef.current[peerId];
     if (peer && peer.fileChannel.readyState === "open") {
       peer.fileChannel.send(JSON.stringify({ type: 'file:cancel', fileId }));
@@ -337,12 +302,6 @@ const Room = () => {
     try {
       while (true) {
         if (!activeTransfers.current.has(fileId)) break;
-
-        if (pausedTransfers.current.has(fileId)) {
-          await new Promise(r => setTimeout(r, 500));
-          continue;
-        }
-
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -359,10 +318,6 @@ const Room = () => {
       }
 
       while (activeTransfers.current.has(fileId)) {
-        if (pausedTransfers.current.has(fileId)) {
-          await new Promise(r => setTimeout(r, 500));
-          continue;
-        }
         const elapsed = Date.now() - startTime;
         if (elapsed >= 6000) break;
         const timeProgress = Math.round((elapsed / 6000) * 100);
