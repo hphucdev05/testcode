@@ -4,6 +4,9 @@ import { useParams, useNavigate } from "react-router-dom";
 import PeerService from "../services/Peer";
 import '../Room.css';
 
+// Dùng flag global ngoài component để chỉ Redirect 1 lần duy nhất sau khi Refresh
+let reloadHandled = false;
+
 // Component hiển thị Video với nút Ghim
 const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
   const videoRef = useRef(null);
@@ -143,7 +146,6 @@ const Room = () => {
           } else if (msg.type === 'file:complete') {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
-              // Chú ý: buffer.receivedSize có thể về đích trước cả 6 giây
               const waitFinish = setInterval(() => {
                 const elapsed = Date.now() - buffer.startTime;
                 const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
@@ -162,7 +164,7 @@ const Room = () => {
               }, 100);
             }
           }
-        } catch (err) { console.log("File channel raw msg:", e.data); }
+        } catch (err) { console.log("File channel msg error:", err); }
       } else {
         const activeFileId = Object.keys(inboundBuffersRef.current)[0];
         if (activeFileId) {
@@ -184,10 +186,9 @@ const Room = () => {
 
       const progInterval = setInterval(() => {
         const elapsed = Date.now() - startTime;
-        const progress = Math.min(Math.round((elapsed / 6000) * 100), 99);
+        const progress = Math.min(Math.round((elapsed / 6000) * 100), 100);
         setDownloadProgress(prev => ({ ...prev, [fileId]: progress }));
-        if (elapsed >= 6000) clearInterval(progInterval);
-        if (!inboundBuffersRef.current[fileId]) clearInterval(progInterval);
+        if (elapsed >= 6000 || !inboundBuffersRef.current[fileId]) clearInterval(progInterval);
       }, 100);
     }
   };
@@ -264,14 +265,14 @@ const Room = () => {
         if (done) break;
         peer.fileChannel.send(value);
         sent += value.byteLength;
-        const timeProgress = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 99);
-        setUploadProgress(prev => ({ ...prev, [fileId]: timeProgress }));
+        const progress = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 100);
+        setUploadProgress(prev => ({ ...prev, [fileId]: progress }));
         if (file.size < 1000000) await new Promise(r => setTimeout(r, 60));
       }
       while (activeTransfers.current.has(fileId)) {
         const elapsed = Date.now() - startTime;
         if (elapsed >= 6000) break;
-        setUploadProgress(prev => ({ ...prev, [fileId]: Math.round((elapsed / 6000) * 100) }));
+        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round((elapsed / 6000) * 100), 100) }));
         await new Promise(r => setTimeout(r, 100));
       }
       if (activeTransfers.current.has(fileId)) {
@@ -296,11 +297,9 @@ const Room = () => {
         return [...prev, { id, email, stream: event.streams[0] }];
       });
     };
-
     peer.peer.onicecandidate = (event) => {
       if (event.candidate) socket.emit("peer:candidate", { candidate: event.candidate, to: id });
     };
-
     peer.peer.ondatachannel = (event) => {
       const channel = event.channel;
       if (channel.label === "chat") {
@@ -323,15 +322,19 @@ const Room = () => {
   }, [socket]);
 
   useEffect(() => {
-    // Nếu refresh trang hoặc quay lại, quay về Lobby
-    const handleUnload = () => {
-      socket.emit("user:leave", { room: currentRoom, email: myEmail });
-    };
-    window.addEventListener("beforeunload", handleUnload);
-
-    if (window.performance && window.performance.getEntriesByType("navigation")[0]?.type === "reload") {
+    // 1. Phát hiện Refresh để văng ra ngoài
+    const isReload = window.performance && window.performance.getEntriesByType("navigation")[0]?.type === "reload";
+    if (isReload && !reloadHandled) {
+      reloadHandled = true;
       navigate("/");
+      return;
     }
+
+    // 2. Phát hiện tắt tab/refresh để dọn dẹp người dùng khác
+    const handleBeforeUnload = () => {
+      socket.emit("user:leaving", { room: currentRoom });
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
 
     if (initialized.current) return;
     initialized.current = true;
@@ -344,7 +347,7 @@ const Room = () => {
     };
     startMyStream();
     return () => {
-      window.removeEventListener("beforeunload", handleUnload);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
       if (myStream) myStream.getTracks().forEach(t => t.stop());
     };
   }, [navigate]);
@@ -377,6 +380,7 @@ const Room = () => {
     };
 
     const handleUserLeft = ({ id, email }) => {
+      console.log(`👋 cleaning up user left: ${email}`);
       setRemoteStreams(prev => prev.filter(p => p.id !== id));
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
       setPinnedId(prev => prev === id ? 'local' : prev);
