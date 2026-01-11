@@ -49,9 +49,12 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
 });
 
 // Component hiển thị Thanh Progress
-const ProgressItem = ({ id, name, progress, type }) => (
+const ProgressItem = ({ id, name, progress, type, onCancel }) => (
   <div className={`progress-item ${type}`}>
-    <small>{type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}</small>
+    <div className="progress-header">
+      <small>{type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}</small>
+      <button className="btn-close-mini" onClick={onCancel} title="Stop Transfer">×</button>
+    </div>
     <div className="progress-item-inner">
       <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }}></div></div>
       <span>{progress}%</span>
@@ -145,6 +148,7 @@ const Room = () => {
           if (msg.type === 'file:offer') {
             setFiles(prev => [...prev, {
               id: msg.fileId,
+              peerId: id, // Cần ID để Cancel
               name: msg.name,
               size: msg.size,
               status: 'pending',
@@ -208,9 +212,13 @@ const Room = () => {
       if (done) break;
       peer.fileChannel.send(value);
       sent += value.byteLength;
-      setDownloadProgress(prev => ({ ...prev, [file.name]: Math.round((sent / file.size) * 100) }));
+      setUploadProgress(prev => ({ ...prev, [fileId]: Math.round((sent / file.size) * 100) }));
     }
     peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
+    // Xóa progress khi xong
+    setTimeout(() => {
+      setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
+    }, 1000);
   };
 
   const createPeer = useCallback((id, email, stream) => {
@@ -367,8 +375,30 @@ const Room = () => {
             <button className="btn-control" onClick={() => fileInputRef.current?.click()}>📁 File</button>
             <input ref={fileInputRef} type="file" onChange={handleFileSelect} style={{ display: 'none' }} />
             <div className="status-progress-container">
-              {Object.entries(uploadProgress).map(([id, p]) => <ProgressItem key={id} progress={p} type="upload" />)}
-              {Object.entries(downloadProgress).map(([name, p]) => <ProgressItem key={name} name={name} progress={p} type="download" />)}
+              {Object.entries(uploadProgress).map(([fileId, p]) => (
+                <ProgressItem
+                  key={fileId}
+                  progress={p}
+                  type="upload"
+                  onCancel={() => {
+                    // Cần tìm peerId cho file này
+                    const f = files.find(f => f.id === fileId);
+                    if (f) handleCancelFile(fileId, f.peerId);
+                  }}
+                />
+              ))}
+              {Object.entries(downloadProgress).map(([name, p]) => {
+                const f = files.find(f => f.name === name && f.status !== 'completed');
+                return (
+                  <ProgressItem
+                    key={name}
+                    name={name}
+                    progress={p}
+                    type="download"
+                    onCancel={() => f && handleCancelFile(f.id, f.peerId)}
+                  />
+                );
+              })}
             </div>
           </div>
           <div className={`video-layout ${pinnedId ? 'spotlight' : 'grid'}`}>
