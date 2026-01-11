@@ -146,6 +146,64 @@ const Room = () => {
     }
   };
 
+  const handleScreenShare = async () => {
+    try {
+      if (!isScreenSharing) {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const videoTrack = stream.getVideoTracks()[0];
+
+        Object.values(peersRef.current).forEach(p => {
+          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
+          if (sender) sender.replaceTrack(videoTrack);
+        });
+
+        videoTrack.onended = () => {
+          Object.values(peersRef.current).forEach(p => {
+            const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
+            if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
+          });
+          setIsScreenSharing(false);
+        };
+
+        setIsScreenSharing(true);
+      } else {
+        Object.values(peersRef.current).forEach(p => {
+          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
+          if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
+        });
+        setIsScreenSharing(false);
+      }
+    } catch (err) {
+      console.error("Screen share error:", err);
+    }
+  };
+
+  const startRecording = () => {
+    const chunks = [];
+    const stream = new MediaStream([
+      ...myStream.getTracks(),
+      ...remoteStreams.flatMap(s => s.stream.getTracks())
+    ]);
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `recording-${Date.now()}.webm`;
+      a.click();
+    };
+    recorder.start();
+    setMediaRecorder(recorder);
+    setIsRecording(true);
+  };
+
+  const stopRecording = () => {
+    mediaRecorder?.stop();
+    setIsRecording(false);
+  };
+
   const activeTransfers = useRef(new Set());
 
   const setupFileLogic = (peer, email, id) => {
@@ -422,32 +480,36 @@ const Room = () => {
       <main className="main-content">
         <div className="video-section">
           <div className="controls-bar">
-            <button className="btn-control" onClick={() => { }}>Screen</button>
-            <button className="btn-control" onClick={() => { }}>Record</button>
+            <button className={`btn-control ${isScreenSharing ? 'active' : ''}`} onClick={handleScreenShare}>
+              {isScreenSharing ? 'Stop Screen' : 'Screen'}
+            </button>
+            <button className={`btn-control ${isRecording ? 'active' : ''}`} onClick={isRecording ? stopRecording : startRecording}>
+              {isRecording ? 'Stop Record' : 'Record'}
+            </button>
             <button className="btn-control" onClick={() => fileInputRef.current?.click()}>📁 File</button>
             <input ref={fileInputRef} type="file" onChange={handleFileSelect} style={{ display: 'none' }} />
             <div className="status-progress-container">
-              {Object.entries(uploadProgress).map(([fileId, p]) => (
-                <ProgressItem
-                  key={fileId}
-                  progress={p}
-                  type="upload"
-                  onCancel={() => {
-                    // Cần tìm peerId cho file này
-                    const f = files.find(f => f.id === fileId);
-                    if (f) handleCancelFile(fileId, f.peerId);
-                  }}
-                />
-              ))}
-              {Object.entries(downloadProgress).map(([name, p]) => {
-                const f = files.find(f => f.name === name && f.status !== 'completed');
+              {Object.entries(uploadProgress).map(([fileId, p]) => {
+                const f = files.find(f => f.id === fileId);
                 return (
                   <ProgressItem
-                    key={name}
-                    name={name}
+                    key={fileId}
+                    name={f?.name || "File"}
+                    progress={p}
+                    type="upload"
+                    onCancel={() => f && handleCancelFile(fileId, f.peerId)}
+                  />
+                );
+              })}
+              {Object.entries(downloadProgress).map(([fileId, p]) => {
+                const f = files.find(f => f.id === fileId);
+                return (
+                  <ProgressItem
+                    key={fileId}
+                    name={f?.name || "File"}
                     progress={p}
                     type="download"
-                    onCancel={() => f && handleCancelFile(f.id, f.peerId)}
+                    onCancel={() => f && handleCancelFile(fileId, f.peerId)}
                   />
                 );
               })}
