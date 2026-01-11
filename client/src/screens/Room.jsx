@@ -88,11 +88,30 @@ const Room = () => {
   const handlePin = (id) => setPinnedId(prev => prev === id ? null : id);
 
   const handleSendMessage = () => {
-    if (!message.trim()) return;
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    Object.values(peersRef.current).forEach(p => p.chatChannel?.send(JSON.stringify({ text: message, time })));
-    setMessages(prev => [...prev, { id: Date.now(), text: message, fromEmail: myEmail, fromSelf: true, time }]);
+    const trimmedMsg = message.trim();
+    if (!trimmedMsg) return;
+
+    // Xóa ô nhập liệu NGAY LẬP TỨC để người dùng cảm thấy mượt
     setMessage("");
+
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const payload = JSON.stringify({ text: trimmedMsg, time });
+
+    // Gửi cho tất cả bạn bè trong phòng
+    Object.values(peersRef.current).forEach(p => {
+      if (p.chatChannel?.readyState === "open") {
+        p.chatChannel.send(payload);
+      }
+    });
+
+    // Cập nhật giao diện của chính mình
+    setMessages(prev => [...prev, {
+      id: Date.now(),
+      text: trimmedMsg,
+      fromEmail: myEmail,
+      fromSelf: true,
+      time
+    }]);
   };
 
   const handleFileSelect = (e) => {
@@ -124,24 +143,35 @@ const Room = () => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'file:offer') {
-            setFiles(prev => [...prev, { id: msg.fileId, peerId: id, name: msg.name, size: msg.size, status: 'pending', type: 'received', timestamp: new Date().toLocaleTimeString() }]);
+            setFiles(prev => [...prev, {
+              id: msg.fileId,
+              name: msg.name,
+              size: msg.size,
+              status: 'pending',
+              from: email,
+              startTime: Date.now()
+            }]);
           } else if (msg.type === 'file:request') {
-            const file = outboundFilesRef.current[msg.fileId];
-            if (file) {
-              setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'sending' } : f));
-              await peer.sendFile(file, (p) => setUploadProgress(prev => ({ ...prev, [msg.fileId]: p })));
-              peer.fileChannel.send(JSON.stringify({ type: "file:complete", fileId: msg.fileId }));
-              setUploadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-              setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed' } : f));
-            }
+            const file = Array.from(outboundFilesRef.current).find(f => f.name === msg.name);
+            if (file) sendFileInChunks(peer, file, msg.fileId);
+          } else if (msg.type === 'file:cancel') {
+            // Xử lý khi bên kia nhấn X
+            setFiles(prev => prev.filter(f => f.id !== msg.fileId));
+            delete inboundBuffersRef.current[msg.fileId];
+            console.warn("🚫 Transfer canceled by remote peer");
           } else if (msg.type === 'file:complete') {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
-              const blob = new Blob(buffer.chunks);
-              const url = URL.createObjectURL(blob);
-              setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
-              setDownloadProgress(prev => { const n = { ...prev }; delete n[buffer.name]; return n; });
-              delete inboundBuffersRef.current[msg.fileId];
+              // Logic ép 6 giây: Nếu truyền quá nhanh, chờ đủ 6s mới hiện nút Save
+              const elapsed = Date.now() - buffer.startTime;
+              const delay = Math.max(0, 6000 - elapsed);
+
+              setTimeout(() => {
+                const blob = new Blob(buffer.chunks);
+                const url = URL.createObjectURL(blob);
+                setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
+                delete inboundBuffersRef.current[msg.fileId];
+              }, delay);
             }
           }
         } catch (err) { console.log("File channel raw msg:", e.data); }
@@ -151,10 +181,36 @@ const Room = () => {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
           buffer.receivedSize += e.data.byteLength;
-          setDownloadProgress(prev => ({ ...prev, [buffer.name]: Math.round((buffer.receivedSize / buffer.size) * 100) }));
+          const progress = Math.round((buffer.receivedSize / buffer.size) * 100);
+          setDownloadProgress(prev => ({ ...prev, [buffer.name]: progress }));
         }
       }
     };
+  };
+
+  const handleCancelFile = (fileId, peerId) => {
+    // Thông báo cho bên kia xóa bộ nhớ
+    const peer = peersRef.current[peerId];
+    if (peer && peer.fileChannel.readyState === "open") {
+      peer.fileChannel.send(JSON.stringify({ type: 'file:cancel', fileId }));
+    }
+    // Xóa ở máy mình
+    setFiles(prev => prev.filter(f => f.id !== fileId));
+    delete inboundBuffersRef.current[fileId];
+  };
+
+  const sendFileInChunks = async (peer, file, fileId) => {
+    const CHUNK_SIZE = 16384;
+    const reader = file.stream().getReader();
+    let sent = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      peer.fileChannel.send(value);
+      sent += value.byteLength;
+      setDownloadProgress(prev => ({ ...prev, [file.name]: Math.round((sent / file.size) * 100) }));
+    }
+    peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
   };
 
   const createPeer = useCallback((id, email, stream) => {
