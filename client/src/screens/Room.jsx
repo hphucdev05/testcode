@@ -504,8 +504,6 @@ const Room = () => {
                     name={f?.name || "File"}
                     progress={p}
                     type="upload"
-                    isPaused={pausedState[fileId]}
-                    onPause={() => togglePauseFile(fileId, f?.peerId)}
                     onCancel={() => f && handleCancelFile(fileId, f.peerId)}
                   />
                 );
@@ -518,8 +516,6 @@ const Room = () => {
                     name={f?.name || "File"}
                     progress={p}
                     type="download"
-                    isPaused={pausedState[fileId]}
-                    onPause={() => togglePauseFile(fileId, f?.peerId)}
                     onCancel={() => f && handleCancelFile(fileId, f.peerId)}
                   />
                 );
