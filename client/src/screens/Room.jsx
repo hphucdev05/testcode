@@ -4,56 +4,34 @@ import { useParams, useNavigate } from "react-router-dom";
 import PeerService from "../services/Peer";
 import '../Room.css';
 
-// Dùng flag global ngoài component để chỉ Redirect 1 lần duy nhất sau khi Refresh
 let reloadHandled = false;
 
-// Component hiển thị Video với nút Ghim
 const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
   const videoRef = useRef(null);
-
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
-      const handlePlay = () => {
-        videoRef.current.play().catch(err => console.log("Autoplay error:", err));
-      };
-      videoRef.current.onloadedmetadata = handlePlay;
-      handlePlay();
+      videoRef.current.play().catch(() => { });
     }
-  }, [stream, email]);
+  }, [stream]);
 
   return (
     <div className={`video-wrapper ${isPinned ? 'pinned' : ''} ${!stream ? 'no-stream' : ''}`} onClick={() => onPin(id)}>
       {stream ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={isLocal}
-          style={isLocal ? { transform: "scaleX(-1)" } : {}}
-        />
+        <video ref={videoRef} autoPlay playsInline muted={isLocal} style={isLocal ? { transform: "scaleX(-1)" } : {}} />
       ) : (
-        <div className="camera-off">
-          <span>📷</span>
-          <p>Camera Disabled</p>
-          {!window.isSecureContext && <small>(HTTPS Required for Mobile)</small>}
-        </div>
+        <div className="camera-off"><span>📷</span><p>Camera Off</p></div>
       )}
-      <div className="user-tag">
-        {isPinned && <span className="pin-icon">📌 </span>}
-        {email}
-      </div>
-      {!isPinned && stream && <div className="pin-overlay">Click to Pin</div>}
+      <div className="user-tag">{isPinned && "📌 "}{email}</div>
     </div>
   );
 });
 
-// Component hiển thị Thanh Progress
 const ProgressItem = ({ id, name, progress, type, onCancel }) => (
   <div className={`progress-item ${type}`}>
     <div className="progress-header">
       <small>{type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}</small>
-      <button className="btn-close-mini" onClick={onCancel} title="Stop Transfer">×</button>
+      <button className="btn-close-mini" onClick={onCancel}>×</button>
     </div>
     <div className="progress-item-inner">
       <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }}></div></div>
@@ -67,15 +45,13 @@ const Room = () => {
   const navigate = useNavigate();
   const { roomId } = useParams();
   const myEmail = localStorage.getItem('userEmail') || 'Anonymous';
-  const currentRoom = roomId || localStorage.getItem('currentRoom') || '1';
+  const currentRoom = roomId || '1';
 
   const [myStream, setMyStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState([]);
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
   const [pinnedId, setPinnedId] = useState('local');
-
-  // Files & Features
   const [files, setFiles] = useState([]);
   const [uploadProgress, setUploadProgress] = useState({});
   const [downloadProgress, setDownloadProgress] = useState({});
@@ -88,19 +64,17 @@ const Room = () => {
   const fileInputRef = useRef(null);
   const outboundFilesRef = useRef({});
   const inboundBuffersRef = useRef({});
+  const activeTransfers = useRef(new Set());
 
-  const handlePin = (id) => setPinnedId(prev => prev === id ? null : id);
+  const handlePin = (id) => setPinnedId(prev => (prev === id ? null : id));
 
   const handleSendMessage = () => {
-    const trimmedMsg = message.trim();
-    if (!trimmedMsg) return;
-    setMessage("");
+    if (!message.trim()) return;
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const payload = JSON.stringify({ text: trimmedMsg, time });
-    Object.values(peersRef.current).forEach(p => {
-      if (p.chatChannel?.readyState === "open") p.chatChannel.send(payload);
-    });
-    setMessages(prev => [...prev, { id: Date.now(), text: trimmedMsg, fromEmail: myEmail, fromSelf: true, time }]);
+    const payload = JSON.stringify({ text: message, time });
+    Object.values(peersRef.current).forEach(p => p.chatChannel?.readyState === "open" && p.chatChannel.send(payload));
+    setMessages(prev => [...prev, { id: Date.now(), text: message, fromEmail: myEmail, fromSelf: true, time }]);
+    setMessage("");
   };
 
   const handleFileSelect = (e) => {
@@ -109,69 +83,51 @@ const Room = () => {
     const fileId = `file-${Date.now()}`;
     outboundFilesRef.current[fileId] = file;
     Object.values(peersRef.current).forEach(p => {
-      if (p.fileChannel?.readyState === "open") {
-        p.fileChannel.send(JSON.stringify({ type: "file:offer", fileId, name: file.name, size: file.size }));
-      }
+      p.fileChannel?.readyState === "open" && p.fileChannel.send(JSON.stringify({ type: "file:offer", fileId, name: file.name, size: file.size }));
     });
-    setFiles(prev => [...prev, { id: fileId, name: file.name, size: file.size, status: 'offered', type: 'sent', timestamp: new Date().toLocaleTimeString() }]);
+    setFiles(prev => [...prev, { id: fileId, name: file.name, size: file.size, status: 'offered', type: 'sent' }]);
     e.target.value = '';
   };
 
   const setupFileLogic = (peer, email, id) => {
     peer.fileChannel.onmessage = async (e) => {
       if (typeof e.data === 'string') {
-        try {
-          const msg = JSON.parse(e.data);
-          if (msg.type === 'file:offer') {
-            setFiles(prev => [...prev, {
-              id: msg.fileId,
-              peerId: id,
-              name: msg.name,
-              size: msg.size,
-              status: 'pending',
-              from: email
-            }]);
-          } else if (msg.type === 'file:request') {
-            const file = outboundFilesRef.current[msg.fileId];
-            if (file) {
-              activeTransfers.current.add(msg.fileId);
-              sendFileInChunks(peer, file, msg.fileId);
-            }
-          } else if (msg.type === 'file:cancel') {
-            activeTransfers.current.delete(msg.fileId);
-            setFiles(prev => prev.filter(f => f.id !== msg.fileId));
-            setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-            setUploadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-            delete inboundBuffersRef.current[msg.fileId];
-          } else if (msg.type === 'file:complete') {
-            const buffer = inboundBuffersRef.current[msg.fileId];
-            if (buffer) {
-              const waitFinish = setInterval(() => {
-                const elapsed = Date.now() - buffer.startTime;
-                const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
-                setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
-
-                if (elapsed >= 6000) {
-                  clearInterval(waitFinish);
-                  const blob = new Blob(buffer.chunks);
-                  const url = URL.createObjectURL(blob);
-                  setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
-                  setTimeout(() => {
-                    setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-                    delete inboundBuffersRef.current[msg.fileId];
-                  }, 500);
-                }
-              }, 100);
-            }
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'file:offer') {
+          setFiles(prev => [...prev, { id: msg.fileId, peerId: id, name: msg.name, size: msg.size, status: 'pending', from: email }]);
+        } else if (msg.type === 'file:request') {
+          const file = outboundFilesRef.current[msg.fileId];
+          if (file) { activeTransfers.current.add(msg.fileId); sendFileInChunks(peer, file, msg.fileId); }
+        } else if (msg.type === 'file:cancel') {
+          activeTransfers.current.delete(msg.fileId);
+          setFiles(prev => prev.filter(f => f.id !== msg.fileId));
+          setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
+          setUploadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
+          delete inboundBuffersRef.current[msg.fileId];
+        } else if (msg.type === 'file:complete') {
+          const buffer = inboundBuffersRef.current[msg.fileId];
+          if (buffer) {
+            // Đảm bảo thanh bar đạt 100% trước khi tạo link tải
+            const checkDone = setInterval(() => {
+              const elapsed = Date.now() - buffer.startTime;
+              const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
+              setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
+              if (elapsed >= 6000) {
+                clearInterval(checkDone);
+                const blob = new Blob(buffer.chunks);
+                const url = URL.createObjectURL(blob);
+                setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
+                setTimeout(() => {
+                  setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
+                  delete inboundBuffersRef.current[msg.fileId];
+                }, 500);
+              }
+            }, 100);
           }
-        } catch (err) { console.log("File channel msg error:", err); }
-      } else {
-        const activeFileId = Object.keys(inboundBuffersRef.current)[0];
-        if (activeFileId) {
-          const buffer = inboundBuffersRef.current[activeFileId];
-          buffer.chunks.push(e.data);
-          buffer.receivedSize += e.data.byteLength;
         }
+      } else {
+        const activeId = Object.keys(inboundBuffersRef.current)[0];
+        if (activeId) { inboundBuffersRef.current[activeId].chunks.push(e.data); }
       }
     };
   };
@@ -180,83 +136,20 @@ const Room = () => {
     const peer = peersRef.current[peerId];
     if (peer) {
       const startTime = Date.now();
-      inboundBuffersRef.current[fileId] = { name, size, chunks: [], receivedSize: 0, startTime };
+      inboundBuffersRef.current[fileId] = { name, size, chunks: [], startTime };
       peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
-
-      const progInterval = setInterval(() => {
+      const interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
-        const progress = Math.min(Math.round((elapsed / 6000) * 100), 100);
-        setDownloadProgress(prev => ({ ...prev, [fileId]: progress }));
-        if (elapsed >= 6000 || !inboundBuffersRef.current[fileId]) clearInterval(progInterval);
+        const p = Math.min(Math.round((elapsed / 6000) * 100), 99);
+        setDownloadProgress(prev => ({ ...prev, [fileId]: p }));
+        if (elapsed >= 6000 || !inboundBuffersRef.current[fileId]) clearInterval(interval);
       }, 100);
     }
   };
 
-  const handleScreenShare = async () => {
-    try {
-      if (!isScreenSharing) {
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const videoTrack = stream.getVideoTracks()[0];
-        Object.values(peersRef.current).forEach(p => {
-          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-          if (sender) sender.replaceTrack(videoTrack);
-        });
-        videoTrack.onended = () => {
-          Object.values(peersRef.current).forEach(p => {
-            const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-            if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
-          });
-          setIsScreenSharing(false);
-        };
-        setIsScreenSharing(true);
-      } else {
-        Object.values(peersRef.current).forEach(p => {
-          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-          if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
-        });
-        setIsScreenSharing(false);
-      }
-    } catch (err) { console.error(err); }
-  };
-
-  const startRecording = () => {
-    const chunks = [];
-    const stream = new MediaStream([...myStream.getTracks(), ...remoteStreams.flatMap(s => s.stream.getTracks())]);
-    const recorder = new MediaRecorder(stream);
-    recorder.ondataavailable = (e) => chunks.push(e.data);
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `recording-${Date.now()}.webm`;
-      a.click();
-    };
-    recorder.start();
-    setMediaRecorder(recorder);
-    setIsRecording(true);
-  };
-
-  const stopRecording = () => { mediaRecorder?.stop(); setIsRecording(false); };
-
-  const activeTransfers = useRef(new Set());
-
-  const handleCancelFile = (fileId, peerId) => {
-    activeTransfers.current.delete(fileId);
-    const peer = peersRef.current[peerId];
-    if (peer && peer.fileChannel.readyState === "open") {
-      peer.fileChannel.send(JSON.stringify({ type: 'file:cancel', fileId }));
-    }
-    setFiles(prev => prev.filter(f => f.id !== fileId));
-    setDownloadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
-    setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
-    delete inboundBuffersRef.current[fileId];
-  };
-
   const sendFileInChunks = async (peer, file, fileId) => {
     const reader = file.stream().getReader();
-    let sent = 0;
     const startTime = Date.now();
     try {
       while (true) {
@@ -264,24 +157,20 @@ const Room = () => {
         const { done, value } = await reader.read();
         if (done) break;
         peer.fileChannel.send(value);
-        sent += value.byteLength;
-        const progress = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 100);
-        setUploadProgress(prev => ({ ...prev, [fileId]: progress }));
-        if (file.size < 1000000) await new Promise(r => setTimeout(r, 60));
+        const p = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 99);
+        setUploadProgress(prev => ({ ...prev, [fileId]: p }));
+        if (file.size < 1000000) await new Promise(r => setTimeout(r, 50));
       }
       while (activeTransfers.current.has(fileId)) {
         const elapsed = Date.now() - startTime;
         if (elapsed >= 6000) break;
-        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round((elapsed / 6000) * 100), 100) }));
+        setUploadProgress(prev => ({ ...prev, [fileId]: Math.round((elapsed / 6000) * 100) }));
         await new Promise(r => setTimeout(r, 100));
       }
       if (activeTransfers.current.has(fileId)) {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
-        setTimeout(() => {
-          setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
-          activeTransfers.current.delete(fileId);
-        }, 1000);
+        setTimeout(() => setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; }), 1000);
       }
     } catch (err) { console.error(err); }
   };
@@ -289,115 +178,90 @@ const Room = () => {
   const createPeer = useCallback((id, email, stream) => {
     const peer = new PeerService();
     if (stream) stream.getTracks().forEach(track => peer.peer.addTrack(track, stream));
-
     peer.peer.ontrack = (event) => {
       setRemoteStreams(prev => {
-        const existing = prev.find(p => p.id === id);
-        if (existing) return prev;
+        if (prev.find(p => p.id === id)) return prev;
         return [...prev, { id, email, stream: event.streams[0] }];
       });
     };
-    peer.peer.onicecandidate = (event) => {
-      if (event.candidate) socket.emit("peer:candidate", { candidate: event.candidate, to: id });
-    };
+    peer.peer.onicecandidate = (e) => e.candidate && socket.emit("peer:candidate", { candidate: e.candidate, to: id });
     peer.peer.ondatachannel = (event) => {
       const channel = event.channel;
       if (channel.label === "chat") {
         peer.chatChannel = channel;
         channel.onmessage = (e) => {
-          try {
-            const data = JSON.parse(e.data);
-            setMessages(prev => [...prev, { id: Date.now(), text: data.text, fromEmail: email, fromSelf: false, time: data.time }]);
-          } catch (err) {
-            setMessages(prev => [...prev, { id: Date.now(), text: e.data, fromEmail: email, fromSelf: false, time: "Now" }]);
-          }
+          const d = JSON.parse(e.data);
+          setMessages(prev => [...prev, { id: Date.now(), text: d.text, fromEmail: email, fromSelf: false, time: d.time }]);
         };
       }
-      if (channel.label === "file") {
-        peer.fileChannel = channel;
-        setupFileLogic(peer, email, id);
-      }
+      if (channel.label === "file") { peer.fileChannel = channel; setupFileLogic(peer, email, id); }
     };
     return peer;
   }, [socket]);
 
   useEffect(() => {
-    // 1. Phát hiện Refresh để văng ra ngoài
     const isReload = window.performance && window.performance.getEntriesByType("navigation")[0]?.type === "reload";
-    if (isReload && !reloadHandled) {
-      reloadHandled = true;
-      navigate("/");
-      return;
-    }
+    if (isReload && !reloadHandled) { reloadHandled = true; navigate("/"); return; }
 
-    // 2. Phát hiện tắt tab/refresh để dọn dẹp người dùng khác
-    const handleBeforeUnload = () => {
-      socket.emit("user:leaving", { room: currentRoom });
-    };
+    const handleBeforeUnload = () => socket.emit("user:leaving", { room: currentRoom });
     window.addEventListener("beforeunload", handleBeforeUnload);
 
-    if (initialized.current) return;
-    initialized.current = true;
-    const startMyStream = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-        setMyStream(stream);
-      } catch (err) { console.warn("Camera blocked", err); }
-      socket.emit("room:join", { email: myEmail, room: currentRoom });
-    };
-    startMyStream();
+    if (!initialized.current) {
+      initialized.current = true;
+      (async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+          setMyStream(stream);
+        } catch (e) { }
+        socket.emit("room:join", { email: myEmail, room: currentRoom });
+      })();
+    }
+
     return () => {
+      // DỌN DẸP TUYỆT ĐỐI KHI RỜI KHỎI (FIX GHOST USER)
+      console.log("Cleanup: Leaving room...");
+      socket.emit("user:leaving", { room: currentRoom });
       window.removeEventListener("beforeunload", handleBeforeUnload);
       if (myStream) myStream.getTracks().forEach(t => t.stop());
+      Object.values(peersRef.current).forEach(p => p.peer.close());
     };
-  }, [navigate]);
+  }, [navigate, myStream]);
 
   useEffect(() => {
-    const handleUserJoined = async ({ email, id }) => {
-      console.log(`👤 New user joined: ${email} (${id})`);
-      const peer = createPeer(id, email, myStream);
-      peer.chatChannel = peer.peer.createDataChannel("chat");
-      peer.fileChannel = peer.peer.createDataChannel("file");
-      setupFileLogic(peer, email, id);
-      peersRef.current[id] = peer;
-      const offer = await peer.getOffer();
+    const handleJoined = async ({ email, id }) => {
+      const p = createPeer(id, email, myStream);
+      p.chatChannel = p.peer.createDataChannel("chat");
+      p.fileChannel = p.peer.createDataChannel("file");
+      setupFileLogic(p, email, id);
+      peersRef.current[id] = p;
+      const offer = await p.getOffer();
       socket.emit("user:call", { to: id, offer });
     };
-
-    const handleIncomingCall = async ({ from, offer, fromEmail }) => {
-      const peer = createPeer(from, fromEmail, myStream);
-      peersRef.current[from] = peer;
-      const answer = await peer.getAnswer(offer);
+    const handleInCall = async ({ from, offer, fromEmail }) => {
+      const p = createPeer(from, fromEmail, myStream);
+      peersRef.current[from] = p;
+      const answer = await p.getAnswer(offer);
       socket.emit("call:accepted", { to: from, ans: answer });
     };
-
-    const handleCallAccepted = async ({ from, ans }) => {
-      if (peersRef.current[from]) await peersRef.current[from].setLocalDescription(ans);
-    };
-
-    const handlePeerCandidate = async ({ candidate, from }) => {
-      if (peersRef.current[from]) await peersRef.current[from].addIceCandidate(candidate);
-    };
-
-    const handleUserLeft = ({ id, email }) => {
-      console.log(`👋 cleaning up user left: ${email}`);
-      setRemoteStreams(prev => prev.filter(p => p.id !== id));
+    const handleAccepted = async ({ from, ans }) => peersRef.current[from] && await peersRef.current[from].setLocalDescription(ans);
+    const handleCandidate = async ({ candidate, from }) => peersRef.current[from] && await peersRef.current[from].addIceCandidate(candidate);
+    const handleLeft = ({ id }) => {
+      setRemoteStreams(prev => prev.filter(s => s.id !== id));
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
       setPinnedId(prev => prev === id ? 'local' : prev);
     };
 
-    socket.on("user:joined", handleUserJoined);
-    socket.on("incoming:call", handleIncomingCall);
-    socket.on("call:accepted", handleCallAccepted);
-    socket.on("peer:candidate", handlePeerCandidate);
-    socket.on("user:left", handleUserLeft);
-
+    socket.on("user:joined", handleJoined);
+    socket.on("incoming:call", handleInCall);
+    socket.on("call:accepted", handleAccepted);
+    socket.on("peer:candidate", handleCandidate);
+    socket.on("user:left", handleLeft);
     return () => {
-      socket.off("user:joined", handleUserJoined);
-      socket.off("incoming:call", handleIncomingCall);
-      socket.off("call:accepted", handleCallAccepted);
-      socket.off("peer:candidate", handlePeerCandidate);
-      socket.off("user:left", handleUserLeft);
+      socket.off("user:joined", handleJoined);
+      socket.off("incoming:call", handleInCall);
+      socket.off("call:accepted", handleAccepted);
+      socket.off("peer:candidate", handleCandidate);
+      socket.off("user:left", handleLeft);
     };
   }, [socket, myStream, createPeer]);
 
@@ -413,40 +277,37 @@ const Room = () => {
       <main className="main-content">
         <div className="video-section">
           <div className="controls-bar">
-            <button className={`btn-control ${isScreenSharing ? 'active' : ''}`} onClick={handleScreenShare}>{isScreenSharing ? 'Stop Screen' : 'Screen'}</button>
-            <button className={`btn-control ${isRecording ? 'active' : ''}`} onClick={isRecording ? stopRecording : startRecording}>{isRecording ? 'Stop Record' : 'Record'}</button>
             <button className="btn-control" onClick={() => fileInputRef.current?.click()}>📁 File</button>
             <input ref={fileInputRef} type="file" onChange={handleFileSelect} style={{ display: 'none' }} />
             <div className="status-progress-container">
               {Object.entries(uploadProgress).map(([fId, p]) => (
-                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || "File"} progress={p} type="upload" onCancel={() => handleCancelFile(fId, files.find(f => f.id === fId)?.peerId)} />
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name} progress={p} type="upload" onCancel={() => { }} />
               ))}
               {Object.entries(downloadProgress).map(([fId, p]) => (
-                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || "File"} progress={p} type="download" onCancel={() => handleCancelFile(fId, files.find(f => f.id === fId)?.peerId)} />
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name} progress={p} type="download" onCancel={() => { }} />
               ))}
             </div>
           </div>
           <div className={`video-layout ${pinnedId ? 'spotlight' : 'grid'}`}>
-            {pinnedId && pStream && <div className="pinned-video-container"><VideoPlayer stream={pStream.stream} isLocal={pStream.id === 'local'} email={`${pStream.email} (Pinned)`} id={pStream.id} onPin={handlePin} isPinned={true} /></div>}
-            <div className="side-videos-grid">{otherStreams.map(s => <VideoPlayer key={s.id} stream={s.stream} isLocal={s.id === 'local'} email={s.email} id={s.id} onPin={handlePin} isPinned={false} />)}</div>
+            {pinnedId && pStream && <div className="pinned-video-container"><VideoPlayer stream={pStream.stream} isLocal={pStream.id === 'local'} email={pStream.email} id={pStream.id} onPin={handlePin} isPinned={true} /></div>}
+            <div className={`side-videos-grid ${!pinnedId ? 'grid-only' : ''}`}>
+              {otherStreams.map(s => <VideoPlayer key={s.id} stream={s.stream} isLocal={s.id === 'local'} email={s.email} id={s.id} onPin={handlePin} isPinned={false} />)}
+            </div>
           </div>
         </div>
         <aside className="side-panel">
           <div className="chat-box">
             <div className="panel-header">💬 Chat</div>
-            <div className="chat-messages">{messages.map(m => (<div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>{!m.fromSelf && <small>{m.fromEmail}</small>}<p>{m.text}</p><div className="message-time">{m.time}</div></div>))}</div>
-            <div className="chat-input-wrapper">
-              <input value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Type..." />
-              <button className="btn-send" onClick={handleSendMessage}>Send</button>
-            </div>
+            <div className="chat-messages">{messages.map(m => (<div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>{!m.fromSelf && <small>{m.fromEmail}</small>}<p>{m.text}</p></div>))}</div>
+            <div className="chat-input-wrapper"><input value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} /><button onClick={handleSendMessage}>Send</button></div>
           </div>
           <div className="file-panel">
-            <div className="panel-header">📂 P2P Files</div>
+            <div className="panel-header">📂 Files</div>
             <div className="file-list">{files.map(f => (
               <div key={f.id} className="file-item">
-                <div className="file-info"><span className="file-name">{f.name}</span><small>{f.status}</small></div>
+                <div className="file-info"><span>{f.name}</span><small>{f.status}</small></div>
                 {f.status === 'pending' && <button className="btn-send" onClick={() => acceptFile(f.peerId, f.id, f.name, f.size)}>Accept</button>}
-                {f.status === 'completed' && f.url && <a href={f.url} download={f.name} className="dl-btn">💾</a>}
+                {f.status === 'completed' && f.url && <a href={f.url} download={f.name} className="dl-btn">💾 Save</a>}
               </div>
             ))}</div>
           </div>
