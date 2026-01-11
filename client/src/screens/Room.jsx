@@ -173,17 +173,22 @@ const Room = () => {
           } else if (msg.type === 'file:complete') {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
-              // Đảm bảo progress đạt 100% trước khi hiện nút Save
-              setDownloadProgress(prev => ({ ...prev, [msg.fileId]: 100 }));
-
-              const blob = new Blob(buffer.chunks);
-              const url = URL.createObjectURL(blob);
-              setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
-
-              setTimeout(() => {
-                setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-                delete inboundBuffersRef.current[msg.fileId];
-              }, 2000);
+              // BẮT BUỘC NGƯỜI NHẬN PHẢI ĐỢI ĐỦ 6 GIÂY
+              const checkAndFinish = () => {
+                const elapsed = Date.now() - buffer.startTime;
+                if (elapsed >= 6000) {
+                  const blob = new Blob(buffer.chunks);
+                  const url = URL.createObjectURL(blob);
+                  setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
+                  setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
+                  delete inboundBuffersRef.current[msg.fileId];
+                } else {
+                  const p = Math.round((elapsed / 6000) * 100);
+                  setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
+                  setTimeout(checkAndFinish, 100);
+                }
+              };
+              checkAndFinish();
             }
           }
         } catch (err) { console.log("File channel raw msg:", e.data); }
@@ -192,18 +197,12 @@ const Room = () => {
         if (activeFileId) {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
-          buffer.receivedSize += e.data.byteLength;
+          // Tính toán tiến trình thật nhưng ghìm lại theo thời gian
+          const realProgress = (buffer.receivedSize / buffer.size) * 100;
+          const elapsed = Date.now() - buffer.startTime;
+          const timeProgress = (elapsed / 6000) * 100;
 
-          // Tính toán tiến trình thật
-          const realProgress = Math.round((buffer.receivedSize / buffer.size) * 100);
-
-          // Ép tiến trình chạy ít nhất 6 giây
-          const elapsed = (Date.now() - buffer.startTime) / 6000; // Tỉ lệ thời gian trôi qua so với 6s
-          const timeProgress = Math.min(Math.round(elapsed * 100), 100);
-
-          // Lấy cái nào nhỏ hơn để thanh bar chạy chậm lại
-          const displayProgress = Math.min(realProgress, timeProgress);
-          setDownloadProgress(prev => ({ ...prev, [activeFileId]: displayProgress }));
+          setDownloadProgress(prev => ({ ...prev, [activeFileId]: Math.min(Math.round(realProgress), Math.round(timeProgress)) }));
         }
       }
     };
@@ -335,7 +334,7 @@ const Room = () => {
 
   useEffect(() => {
     const handleUserJoined = async ({ email, id }) => {
-      console.log("User joined:", email);
+      console.log(`👤 New user joined: ${email} (${id})`);
       const peer = createPeer(id, email, myStream);
 
       peer.chatChannel = peer.peer.createDataChannel("chat");
