@@ -55,9 +55,6 @@ const Room = () => {
   const [files, setFiles] = useState([]);
   const [uploadProgress, setUploadProgress] = useState({});
   const [downloadProgress, setDownloadProgress] = useState({});
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [mediaRecorder, setMediaRecorder] = useState(null);
 
   const peersRef = useRef({});
   const initialized = useRef(false);
@@ -98,16 +95,9 @@ const Room = () => {
         } else if (msg.type === 'file:request') {
           const file = outboundFilesRef.current[msg.fileId];
           if (file) { activeTransfers.current.add(msg.fileId); sendFileInChunks(peer, file, msg.fileId); }
-        } else if (msg.type === 'file:cancel') {
-          activeTransfers.current.delete(msg.fileId);
-          setFiles(prev => prev.filter(f => f.id !== msg.fileId));
-          setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
-          setUploadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
-          delete inboundBuffersRef.current[msg.fileId];
         } else if (msg.type === 'file:complete') {
           const buffer = inboundBuffersRef.current[msg.fileId];
           if (buffer) {
-            // Đảm bảo thanh bar đạt 100% trước khi tạo link tải
             const checkDone = setInterval(() => {
               const elapsed = Date.now() - buffer.startTime;
               const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
@@ -120,7 +110,7 @@ const Room = () => {
                 setTimeout(() => {
                   setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
                   delete inboundBuffersRef.current[msg.fileId];
-                }, 500);
+                }, 1000);
               }
             }, 100);
           }
@@ -141,7 +131,7 @@ const Room = () => {
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
       const interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
-        const p = Math.min(Math.round((elapsed / 6000) * 100), 99);
+        const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
         setDownloadProgress(prev => ({ ...prev, [fileId]: p }));
         if (elapsed >= 6000 || !inboundBuffersRef.current[fileId]) clearInterval(interval);
       }, 100);
@@ -157,14 +147,14 @@ const Room = () => {
         const { done, value } = await reader.read();
         if (done) break;
         peer.fileChannel.send(value);
-        const p = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 99);
+        const p = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 100);
         setUploadProgress(prev => ({ ...prev, [fileId]: p }));
-        if (file.size < 1000000) await new Promise(r => setTimeout(r, 50));
+        if (file.size < 1000000) await new Promise(r => setTimeout(r, 60));
       }
       while (activeTransfers.current.has(fileId)) {
         const elapsed = Date.now() - startTime;
         if (elapsed >= 6000) break;
-        setUploadProgress(prev => ({ ...prev, [fileId]: Math.round((elapsed / 6000) * 100) }));
+        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round((elapsed / 6000) * 100), 100) }));
         await new Promise(r => setTimeout(r, 100));
       }
       if (activeTransfers.current.has(fileId)) {
@@ -199,11 +189,14 @@ const Room = () => {
     return peer;
   }, [socket]);
 
+  // EFFECT 1: QUẢN LÝ KẾT NỐI VÀ DỌN DẸP TUYỆT ĐỐI (Dùng [] để chỉ chạy 1 lần)
   useEffect(() => {
     const isReload = window.performance && window.performance.getEntriesByType("navigation")[0]?.type === "reload";
     if (isReload && !reloadHandled) { reloadHandled = true; navigate("/"); return; }
 
-    const handleBeforeUnload = () => socket.emit("user:leaving", { room: currentRoom });
+    const handleBeforeUnload = () => {
+      socket.emit("user:leaving", { room: currentRoom });
+    };
     window.addEventListener("beforeunload", handleBeforeUnload);
 
     if (!initialized.current) {
@@ -212,21 +205,22 @@ const Room = () => {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
           setMyStream(stream);
-        } catch (e) { }
-        socket.emit("room:join", { email: myEmail, room: currentRoom });
+          socket.emit("room:join", { email: myEmail, room: currentRoom });
+        } catch (e) {
+          socket.emit("room:join", { email: myEmail, room: currentRoom });
+        }
       })();
     }
 
     return () => {
-      // DỌN DẸP TUYỆT ĐỐI KHI RỜI KHỎI (FIX GHOST USER)
-      console.log("Cleanup: Leaving room...");
+      console.log("Cleanup unmounting...");
       socket.emit("user:leaving", { room: currentRoom });
       window.removeEventListener("beforeunload", handleBeforeUnload);
-      if (myStream) myStream.getTracks().forEach(t => t.stop());
       Object.values(peersRef.current).forEach(p => p.peer.close());
     };
-  }, [navigate, myStream]);
+  }, []);
 
+  // EFFECT 2: XỬ LÝ SOCKET EVENTS KHI STREAM ĐÃ SẴN SÀNG
   useEffect(() => {
     const handleJoined = async ({ email, id }) => {
       const p = createPeer(id, email, myStream);
@@ -248,7 +242,6 @@ const Room = () => {
     const handleLeft = ({ id }) => {
       setRemoteStreams(prev => prev.filter(s => s.id !== id));
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
-      setPinnedId(prev => prev === id ? 'local' : prev);
     };
 
     socket.on("user:joined", handleJoined);
@@ -302,7 +295,7 @@ const Room = () => {
             <div className="chat-input-wrapper"><input value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} /><button onClick={handleSendMessage}>Send</button></div>
           </div>
           <div className="file-panel">
-            <div className="panel-header">📂 Files</div>
+            <div className="panel-header">📂 P2P Files</div>
             <div className="file-list">{files.map(f => (
               <div key={f.id} className="file-item">
                 <div className="file-info"><span>{f.name}</span><small>{f.status}</small></div>
