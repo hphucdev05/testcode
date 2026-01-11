@@ -134,34 +134,15 @@ const Room = () => {
   const acceptFile = (peerId, fileId, name, size) => {
     const peer = peersRef.current[peerId];
     if (peer) {
-      const startTime = Date.now();
       inboundBuffersRef.current[fileId] = {
         name,
         size,
         chunks: [],
         receivedSize: 0,
-        startTime: startTime
+        startTime: Date.now()
       };
       peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
-
-      // Vòng lặp cập nhật Progress mượt mà cho bên nhận
-      const updateLoop = () => {
-        const buffer = inboundBuffersRef.current[fileId];
-        if (!buffer) return; // Đã xong hoặc bị hủy
-
-        const elapsed = Date.now() - startTime;
-        const realProgress = (buffer.receivedSize / (buffer.size || 1)) * 100;
-        const timeProgress = (elapsed / 6000) * 100;
-
-        const displayProgress = Math.min(Math.round(realProgress), Math.round(timeProgress));
-        setDownloadProgress(prev => ({ ...prev, [fileId]: displayProgress }));
-
-        if (elapsed < 6000 || buffer.receivedSize < buffer.size) {
-          setTimeout(updateLoop, 100);
-        }
-      };
-      updateLoop();
     }
   };
 
@@ -231,26 +212,20 @@ const Room = () => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'file:offer') {
-            setFiles(prev => {
-              if (prev.find(f => f.id === msg.fileId)) return prev;
-              return [...prev, {
-                id: msg.fileId,
-                peerId: id,
-                name: msg.name,
-                size: msg.size,
-                status: 'pending',
-                from: email,
-                startTime: Date.now()
-              }];
-            });
+            setFiles(prev => [...prev, {
+              id: msg.fileId,
+              peerId: id,
+              name: msg.name,
+              size: msg.size,
+              status: 'pending',
+              from: email,
+              startTime: Date.now()
+            }]);
           } else if (msg.type === 'file:request') {
             const file = outboundFilesRef.current[msg.fileId];
             if (file) {
-              console.log(`📤 Starting to send file: ${file.name}`);
               activeTransfers.current.add(msg.fileId);
               sendFileInChunks(peer, file, msg.fileId);
-            } else {
-              console.error("❌ File not found in outbound cache!");
             }
           } else if (msg.type === 'file:cancel') {
             activeTransfers.current.delete(msg.fileId);
@@ -263,7 +238,6 @@ const Room = () => {
             if (buffer) {
               const checkAndFinish = () => {
                 if (!inboundBuffersRef.current[msg.fileId]) return;
-
                 const elapsed = Date.now() - buffer.startTime;
                 if (elapsed >= 6000) {
                   const blob = new Blob(buffer.chunks);
@@ -282,11 +256,7 @@ const Room = () => {
           }
         } catch (err) { console.log("File channel raw msg:", e.data); }
       } else {
-        const activeFileId = Object.keys(inboundBuffersRef.current).find(id => {
-          const b = inboundBuffersRef.current[id];
-          return b.receivedSize < b.size;
-        }) || Object.keys(inboundBuffersRef.current)[0];
-
+        const activeFileId = Object.keys(inboundBuffersRef.current)[0];
         if (activeFileId) {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
@@ -295,7 +265,6 @@ const Room = () => {
           const realProgress = (buffer.receivedSize / buffer.size) * 100;
           const elapsed = Date.now() - (buffer.startTime || Date.now());
           const timeProgress = (elapsed / 6000) * 100;
-
           setDownloadProgress(prev => ({ ...prev, [activeFileId]: Math.min(Math.round(realProgress), Math.round(timeProgress)) }));
         }
       }
