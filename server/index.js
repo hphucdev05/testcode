@@ -1,11 +1,24 @@
 const { Server } = require("socket.io");
+const http = require("http");
 
-const io = new Server(8000, {
-  cors: { 
-    origin: true, 
+const PORT = process.env.PORT || 8000;
+
+// Tạo HTTP Server để Render có thể "kiểm tra sức khỏe" (Health Check)
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('WebRTC Signaling Server is Running\n');
+});
+
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Cho phép mọi nguồn trong môi trường deploy
     methods: ["GET", "POST"],
     credentials: true
   },
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 Production Server ready on port ${PORT}`);
 });
 
 const emailToSocketIdMap = new Map();
@@ -17,58 +30,48 @@ io.on("connection", (socket) => {
 
   socket.on("room:join", (data) => {
     const { email, room } = data;
-    
-    // Check if this email is already connected (reconnect scenario)
+
+    // For local testing: Allow same email in multiple tabs without disconnecting
+    /*
     const oldSocketId = emailToSocketIdMap.get(email);
     if (oldSocketId && oldSocketId !== socket.id) {
       console.log(`🔄 User ${email} reconnecting. Old socket: ${oldSocketId}`);
-      
-      // Get old room
       const oldRoom = socketIdToRoomMap.get(oldSocketId);
       if (oldRoom) {
-        // Notify others in old room that user left
-        io.to(oldRoom).emit("user:left", { 
-          id: oldSocketId, 
-          email 
-        });
-        
-        // Force disconnect old socket
+        io.to(oldRoom).emit("user:left", { id: oldSocketId, email });
         const oldSocket = io.sockets.sockets.get(oldSocketId);
-        if (oldSocket) {
-          oldSocket.disconnect(true);
-        }
+        if (oldSocket) oldSocket.disconnect(true);
       }
-      
-      // Clean up old mappings
       socketIdToEmailMap.delete(oldSocketId);
       socketIdToRoomMap.delete(oldSocketId);
     }
-    
+    */
+
     // Check if socket is already in another room
     const currentRoom = socketIdToRoomMap.get(socket.id);
     if (currentRoom && currentRoom !== room) {
       console.log(`📤 Socket ${socket.id} leaving old room: ${currentRoom}`);
       socket.leave(currentRoom);
-      
+
       // Notify old room
-      io.to(currentRoom).emit("user:left", { 
-        id: socket.id, 
-        email: socketIdToEmailMap.get(socket.id) 
+      io.to(currentRoom).emit("user:left", {
+        id: socket.id,
+        email: socketIdToEmailMap.get(socket.id)
       });
     }
-    
+
     // Update mappings
     emailToSocketIdMap.set(email, socket.id);
     socketIdToEmailMap.set(socket.id, email);
     socketIdToRoomMap.set(socket.id, room);
-    
+
     // Join room
     socket.join(room);
-    
+
     // Get existing users in room (excluding self)
     const clientsInRoom = io.sockets.adapter.rooms.get(room);
     const existingUsers = [];
-    
+
     if (clientsInRoom) {
       clientsInRoom.forEach(id => {
         if (id !== socket.id) {
@@ -87,14 +90,14 @@ io.on("connection", (socket) => {
 
     // Notify others about new joiner (with user count update)
     const totalUsers = clientsInRoom ? clientsInRoom.size : 1;
-    socket.to(room).emit("user:joined", { 
-      email, 
+    socket.to(room).emit("user:joined", {
+      email,
       id: socket.id,
-      totalUsers 
+      totalUsers
     });
-    
+
     // Broadcast updated user count to everyone including self
-    io.to(room).emit("room:update", { 
+    io.to(room).emit("room:update", {
       totalUsers,
       users: Array.from(clientsInRoom || []).map(id => ({
         id,
@@ -106,31 +109,31 @@ io.on("connection", (socket) => {
   // Handle explicit leave
   socket.on("user:leaving", ({ room }) => {
     if (!room) return;
-    
+
     const email = socketIdToEmailMap.get(socket.id);
     console.log(`👋 ${email} leaving room ${room}`);
-    
+
     socket.leave(room);
-    
+
     // Notify others
     const clientsInRoom = io.sockets.adapter.rooms.get(room);
     const totalUsers = clientsInRoom ? clientsInRoom.size : 0;
-    
-    io.to(room).emit("user:left", { 
-      id: socket.id, 
+
+    io.to(room).emit("user:left", {
+      id: socket.id,
       email,
       totalUsers
     });
-    
+
     // Broadcast updated user count
-    io.to(room).emit("room:update", { 
+    io.to(room).emit("room:update", {
       totalUsers,
       users: Array.from(clientsInRoom || []).map(id => ({
         id,
         email: socketIdToEmailMap.get(id)
       }))
     });
-    
+
     // Clean up mappings
     socketIdToRoomMap.delete(socket.id);
   });
@@ -161,22 +164,22 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     const email = socketIdToEmailMap.get(socket.id);
     const room = socketIdToRoomMap.get(socket.id);
-    
+
     console.log(`❌ ${email} (${socket.id}) disconnected`);
-    
+
     if (room) {
       // Notify others in the room
       const clientsInRoom = io.sockets.adapter.rooms.get(room);
       const totalUsers = clientsInRoom ? clientsInRoom.size : 0;
-      
-      io.to(room).emit("user:left", { 
-        id: socket.id, 
+
+      io.to(room).emit("user:left", {
+        id: socket.id,
         email,
         totalUsers
       });
-      
+
       // Broadcast updated user count
-      io.to(room).emit("room:update", { 
+      io.to(room).emit("room:update", {
         totalUsers,
         users: Array.from(clientsInRoom || []).map(id => ({
           id,
@@ -184,7 +187,7 @@ io.on("connection", (socket) => {
         }))
       });
     }
-    
+
     // Clean up all mappings
     if (email) emailToSocketIdMap.delete(email);
     socketIdToEmailMap.delete(socket.id);
