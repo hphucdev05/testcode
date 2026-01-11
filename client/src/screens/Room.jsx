@@ -140,6 +140,8 @@ const Room = () => {
     }
   };
 
+  const activeTransfers = useRef(new Set());
+
   const setupFileLogic = (peer, email, id) => {
     peer.fileChannel.onmessage = async (e) => {
       if (typeof e.data === 'string') {
@@ -148,7 +150,7 @@ const Room = () => {
           if (msg.type === 'file:offer') {
             setFiles(prev => [...prev, {
               id: msg.fileId,
-              peerId: id, // Cần ID để Cancel
+              peerId: id,
               name: msg.name,
               size: msg.size,
               status: 'pending',
@@ -157,25 +159,31 @@ const Room = () => {
             }]);
           } else if (msg.type === 'file:request') {
             const file = Array.from(outboundFilesRef.current).find(f => f.name === msg.name);
-            if (file) sendFileInChunks(peer, file, msg.fileId);
+            if (file) {
+              activeTransfers.current.add(msg.fileId);
+              sendFileInChunks(peer, file, msg.fileId);
+            }
           } else if (msg.type === 'file:cancel') {
-            // Xử lý khi bên kia nhấn X
+            activeTransfers.current.delete(msg.fileId);
             setFiles(prev => prev.filter(f => f.id !== msg.fileId));
+            setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
+            setUploadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
             delete inboundBuffersRef.current[msg.fileId];
             console.warn("🚫 Transfer canceled by remote peer");
           } else if (msg.type === 'file:complete') {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
-              // Logic ép 6 giây: Nếu truyền quá nhanh, chờ đủ 6s mới hiện nút Save
-              const elapsed = Date.now() - buffer.startTime;
-              const delay = Math.max(0, 6000 - elapsed);
+              // Đảm bảo progress đạt 100% trước khi hiện nút Save
+              setDownloadProgress(prev => ({ ...prev, [msg.fileId]: 100 }));
+
+              const blob = new Blob(buffer.chunks);
+              const url = URL.createObjectURL(blob);
+              setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
 
               setTimeout(() => {
-                const blob = new Blob(buffer.chunks);
-                const url = URL.createObjectURL(blob);
-                setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
+                setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
                 delete inboundBuffersRef.current[msg.fileId];
-              }, delay);
+              }, 2000);
             }
           }
         } catch (err) { console.log("File channel raw msg:", e.data); }
@@ -185,40 +193,73 @@ const Room = () => {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
           buffer.receivedSize += e.data.byteLength;
-          const progress = Math.round((buffer.receivedSize / buffer.size) * 100);
-          setDownloadProgress(prev => ({ ...prev, [buffer.name]: progress }));
+
+          // Tính toán tiến trình thật
+          const realProgress = Math.round((buffer.receivedSize / buffer.size) * 100);
+
+          // Ép tiến trình chạy ít nhất 6 giây
+          const elapsed = (Date.now() - buffer.startTime) / 6000; // Tỉ lệ thời gian trôi qua so với 6s
+          const timeProgress = Math.min(Math.round(elapsed * 100), 100);
+
+          // Lấy cái nào nhỏ hơn để thanh bar chạy chậm lại
+          const displayProgress = Math.min(realProgress, timeProgress);
+          setDownloadProgress(prev => ({ ...prev, [activeFileId]: displayProgress }));
         }
       }
     };
   };
 
   const handleCancelFile = (fileId, peerId) => {
-    // Thông báo cho bên kia xóa bộ nhớ
+    activeTransfers.current.delete(fileId);
     const peer = peersRef.current[peerId];
     if (peer && peer.fileChannel.readyState === "open") {
       peer.fileChannel.send(JSON.stringify({ type: 'file:cancel', fileId }));
     }
-    // Xóa ở máy mình
     setFiles(prev => prev.filter(f => f.id !== fileId));
+    setDownloadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
+    setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
     delete inboundBuffersRef.current[fileId];
   };
 
   const sendFileInChunks = async (peer, file, fileId) => {
-    const CHUNK_SIZE = 16384;
     const reader = file.stream().getReader();
     let sent = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      peer.fileChannel.send(value);
-      sent += value.byteLength;
-      setUploadProgress(prev => ({ ...prev, [fileId]: Math.round((sent / file.size) * 100) }));
+    const startTime = Date.now();
+
+    try {
+      while (true) {
+        // KIỂM TRA LỆNH HỦY TRONG MỖI VÒNG LẶP
+        if (!activeTransfers.current.has(fileId)) {
+          console.log("🛑 Sending mission aborted!");
+          break;
+        }
+
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        peer.fileChannel.send(value);
+        sent += value.byteLength;
+
+        const realProgress = Math.round((sent / file.size) * 100);
+        const elapsed = (Date.now() - startTime) / 6000;
+        const timeProgress = Math.min(Math.round(elapsed * 100), 100);
+
+        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(realProgress, timeProgress) }));
+
+        // Tạm nghỉ một chút nếu gửi quá nhanh để kịp demo 6s
+        if (file.size < 1000000) await new Promise(r => setTimeout(r, 20));
+      }
+
+      if (activeTransfers.current.has(fileId)) {
+        peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
+        setTimeout(() => {
+          setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
+          activeTransfers.current.delete(fileId);
+        }, 2000);
+      }
+    } catch (err) {
+      console.error("Chunk send error:", err);
     }
-    peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
-    // Xóa progress khi xong
-    setTimeout(() => {
-      setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
-    }, 1000);
   };
 
   const createPeer = useCallback((id, email, stream) => {
