@@ -23,19 +23,27 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
   }, [stream, email]);
 
   return (
-    <div className={`video-wrapper ${isPinned ? 'pinned' : ''}`} onClick={() => onPin(id)}>
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted={isLocal}
-        style={isLocal ? { transform: "scaleX(-1)" } : {}}
-      />
+    <div className={`video-wrapper ${isPinned ? 'pinned' : ''} ${!stream ? 'no-stream' : ''}`} onClick={() => onPin(id)}>
+      {stream ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={isLocal}
+          style={isLocal ? { transform: "scaleX(-1)" } : {}}
+        />
+      ) : (
+        <div className="camera-off">
+          <span>📷</span>
+          <p>Camera Disabled</p>
+          {!window.isSecureContext && <small>(HTTPS Required for Mobile)</small>}
+        </div>
+      )}
       <div className="user-tag">
         {isPinned && <span className="pin-icon">📌 </span>}
         {email}
       </div>
-      {!isPinned && <div className="pin-overlay">Click to Pin</div>}
+      {!isPinned && stream && <div className="pin-overlay">Click to Pin</div>}
     </div>
   );
 });
@@ -197,11 +205,16 @@ const Room = () => {
     initialized.current = true;
 
     const startMyStream = async () => {
+      console.log("🚀 Starting media stream...");
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
         setMyStream(stream);
-        socket.emit("room:join", { email: myEmail, room: currentRoom });
-      } catch (err) { console.error("Error accessing media:", err); }
+        console.log("✅ Camera access granted");
+      } catch (err) {
+        console.warn("⚠️ Camera blocked. Reason: Most mobile browsers require HTTPS (ngrok) for camera access.", err);
+        // Vẫn tiếp tục Join để test Chat/File
+      }
+      socket.emit("room:join", { email: myEmail, room: currentRoom });
     };
 
     startMyStream();
