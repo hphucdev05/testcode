@@ -134,7 +134,13 @@ const Room = () => {
   const acceptFile = (peerId, fileId, name, size) => {
     const peer = peersRef.current[peerId];
     if (peer) {
-      inboundBuffersRef.current[fileId] = { name, size, chunks: [], receivedSize: 0 };
+      inboundBuffersRef.current[fileId] = {
+        name,
+        size,
+        chunks: [],
+        receivedSize: 0,
+        startTime: Date.now()
+      };
       peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
     }
@@ -193,13 +199,15 @@ const Room = () => {
           }
         } catch (err) { console.log("File channel raw msg:", e.data); }
       } else {
+        // Tìm buffer đang nhận phù hợp (thường là cái đầu tiên)
         const activeFileId = Object.keys(inboundBuffersRef.current)[0];
         if (activeFileId) {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
-          // Tính toán tiến trình thật nhưng ghìm lại theo thời gian
+          buffer.receivedSize += e.data.byteLength; // QUAN TRỌNG: Phải cộng dồn kích thước!
+
           const realProgress = (buffer.receivedSize / buffer.size) * 100;
-          const elapsed = Date.now() - buffer.startTime;
+          const elapsed = Date.now() - (buffer.startTime || Date.now());
           const timeProgress = (elapsed / 6000) * 100;
 
           setDownloadProgress(prev => ({ ...prev, [activeFileId]: Math.min(Math.round(realProgress), Math.round(timeProgress)) }));
