@@ -93,28 +93,13 @@ const Room = () => {
   const handleSendMessage = () => {
     const trimmedMsg = message.trim();
     if (!trimmedMsg) return;
-
-    // Xóa ô nhập liệu NGAY LẬP TỨC để người dùng cảm thấy mượt
     setMessage("");
-
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const payload = JSON.stringify({ text: trimmedMsg, time });
-
-    // Gửi cho tất cả bạn bè trong phòng
     Object.values(peersRef.current).forEach(p => {
-      if (p.chatChannel?.readyState === "open") {
-        p.chatChannel.send(payload);
-      }
+      if (p.chatChannel?.readyState === "open") p.chatChannel.send(payload);
     });
-
-    // Cập nhật giao diện của chính mình
-    setMessages(prev => [...prev, {
-      id: Date.now(),
-      text: trimmedMsg,
-      fromEmail: myEmail,
-      fromSelf: true,
-      time
-    }]);
+    setMessages(prev => [...prev, { id: Date.now(), text: trimmedMsg, fromEmail: myEmail, fromSelf: true, time }]);
   };
 
   const handleFileSelect = (e) => {
@@ -131,81 +116,6 @@ const Room = () => {
     e.target.value = '';
   };
 
-  const acceptFile = (peerId, fileId, name, size) => {
-    const peer = peersRef.current[peerId];
-    if (peer) {
-      inboundBuffersRef.current[fileId] = {
-        name,
-        size,
-        chunks: [],
-        receivedSize: 0,
-        startTime: Date.now()
-      };
-      peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
-      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
-    }
-  };
-
-  const handleScreenShare = async () => {
-    try {
-      if (!isScreenSharing) {
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const videoTrack = stream.getVideoTracks()[0];
-
-        Object.values(peersRef.current).forEach(p => {
-          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-          if (sender) sender.replaceTrack(videoTrack);
-        });
-
-        videoTrack.onended = () => {
-          Object.values(peersRef.current).forEach(p => {
-            const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-            if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
-          });
-          setIsScreenSharing(false);
-        };
-
-        setIsScreenSharing(true);
-      } else {
-        Object.values(peersRef.current).forEach(p => {
-          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-          if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
-        });
-        setIsScreenSharing(false);
-      }
-    } catch (err) {
-      console.error("Screen share error:", err);
-    }
-  };
-
-  const startRecording = () => {
-    const chunks = [];
-    const stream = new MediaStream([
-      ...myStream.getTracks(),
-      ...remoteStreams.flatMap(s => s.stream.getTracks())
-    ]);
-    const recorder = new MediaRecorder(stream);
-    recorder.ondataavailable = (e) => chunks.push(e.data);
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `recording-${Date.now()}.webm`;
-      a.click();
-    };
-    recorder.start();
-    setMediaRecorder(recorder);
-    setIsRecording(true);
-  };
-
-  const stopRecording = () => {
-    mediaRecorder?.stop();
-    setIsRecording(false);
-  };
-
-  const activeTransfers = useRef(new Set());
-
   const setupFileLogic = (peer, email, id) => {
     peer.fileChannel.onmessage = async (e) => {
       if (typeof e.data === 'string') {
@@ -218,8 +128,7 @@ const Room = () => {
               name: msg.name,
               size: msg.size,
               status: 'pending',
-              from: email,
-              startTime: Date.now()
+              from: email
             }]);
           } else if (msg.type === 'file:request') {
             const file = outboundFilesRef.current[msg.fileId];
@@ -236,22 +145,18 @@ const Room = () => {
           } else if (msg.type === 'file:complete') {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
-              const checkAndFinish = () => {
-                if (!inboundBuffersRef.current[msg.fileId]) return;
+              // Chú ý: buffer.receivedSize có thể về đích trước cả 6 giây
+              const waitFinish = setInterval(() => {
                 const elapsed = Date.now() - buffer.startTime;
                 if (elapsed >= 6000) {
+                  clearInterval(waitFinish);
                   const blob = new Blob(buffer.chunks);
                   const url = URL.createObjectURL(blob);
                   setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
                   setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
                   delete inboundBuffersRef.current[msg.fileId];
-                } else {
-                  const p = Math.round((elapsed / 6000) * 100);
-                  setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
-                  setTimeout(checkAndFinish, 100);
                 }
-              };
-              checkAndFinish();
+              }, 100);
             }
           }
         } catch (err) { console.log("File channel raw msg:", e.data); }
@@ -261,17 +166,77 @@ const Room = () => {
           const buffer = inboundBuffersRef.current[activeFileId];
           buffer.chunks.push(e.data);
           buffer.receivedSize += e.data.byteLength;
-
-          const realProgress = (buffer.receivedSize / buffer.size) * 100;
-          const elapsed = Date.now() - (buffer.startTime || Date.now());
-          const timeProgress = (elapsed / 6000) * 100;
-          setDownloadProgress(prev => ({ ...prev, [activeFileId]: Math.min(Math.round(realProgress), Math.round(timeProgress)) }));
         }
       }
     };
   };
 
+  const acceptFile = (peerId, fileId, name, size) => {
+    const peer = peersRef.current[peerId];
+    if (peer) {
+      const startTime = Date.now();
+      inboundBuffersRef.current[fileId] = { name, size, chunks: [], receivedSize: 0, startTime };
+      peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
+      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
 
+      const progInterval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(Math.round((elapsed / 6000) * 100), 99);
+        setDownloadProgress(prev => ({ ...prev, [fileId]: progress }));
+        if (elapsed >= 6000) clearInterval(progInterval);
+        if (!inboundBuffersRef.current[fileId]) clearInterval(progInterval);
+      }, 100);
+    }
+  };
+
+  const handleScreenShare = async () => {
+    try {
+      if (!isScreenSharing) {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const videoTrack = stream.getVideoTracks()[0];
+        Object.values(peersRef.current).forEach(p => {
+          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
+          if (sender) sender.replaceTrack(videoTrack);
+        });
+        videoTrack.onended = () => {
+          Object.values(peersRef.current).forEach(p => {
+            const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
+            if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
+          });
+          setIsScreenSharing(false);
+        };
+        setIsScreenSharing(true);
+      } else {
+        Object.values(peersRef.current).forEach(p => {
+          const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
+          if (sender) sender.replaceTrack(myStream.getVideoTracks()[0]);
+        });
+        setIsScreenSharing(false);
+      }
+    } catch (err) { console.error(err); }
+  };
+
+  const startRecording = () => {
+    const chunks = [];
+    const stream = new MediaStream([...myStream.getTracks(), ...remoteStreams.flatMap(s => s.stream.getTracks())]);
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `recording-${Date.now()}.webm`;
+      a.click();
+    };
+    recorder.start();
+    setMediaRecorder(recorder);
+    setIsRecording(true);
+  };
+
+  const stopRecording = () => { mediaRecorder?.stop(); setIsRecording(false); };
+
+  const activeTransfers = useRef(new Set());
 
   const handleCancelFile = (fileId, peerId) => {
     activeTransfers.current.delete(fileId);
@@ -289,54 +254,39 @@ const Room = () => {
     const reader = file.stream().getReader();
     let sent = 0;
     const startTime = Date.now();
-
     try {
       while (true) {
         if (!activeTransfers.current.has(fileId)) break;
         const { done, value } = await reader.read();
         if (done) break;
-
         peer.fileChannel.send(value);
         sent += value.byteLength;
-
-        const realProgress = (sent / file.size) * 100;
-        const elapsed = Date.now() - startTime;
-        const timeProgress = (elapsed / 6000) * 100;
-        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round(realProgress), Math.round(timeProgress)) }));
-
-        if (file.size < 500000) await new Promise(r => setTimeout(r, 100));
-        else await new Promise(r => setTimeout(r, 10));
+        const timeProgress = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 99);
+        setUploadProgress(prev => ({ ...prev, [fileId]: timeProgress }));
+        if (file.size < 1000000) await new Promise(r => setTimeout(r, 60));
       }
-
       while (activeTransfers.current.has(fileId)) {
         const elapsed = Date.now() - startTime;
         if (elapsed >= 6000) break;
-        const timeProgress = Math.round((elapsed / 6000) * 100);
-        setUploadProgress(prev => ({ ...prev, [fileId]: timeProgress }));
+        setUploadProgress(prev => ({ ...prev, [fileId]: Math.round((elapsed / 6000) * 100) }));
         await new Promise(r => setTimeout(r, 100));
       }
-
       if (activeTransfers.current.has(fileId)) {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
         setTimeout(() => {
           setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
           activeTransfers.current.delete(fileId);
-        }, 1500);
+        }, 1000);
       }
-    } catch (err) {
-      console.error("Transmission error:", err);
-    }
+    } catch (err) { console.error(err); }
   };
 
   const createPeer = useCallback((id, email, stream) => {
     const peer = new PeerService();
-    if (stream) {
-      stream.getTracks().forEach(track => peer.peer.addTrack(track, stream));
-    }
+    if (stream) stream.getTracks().forEach(track => peer.peer.addTrack(track, stream));
 
     peer.peer.ontrack = (event) => {
-      console.log("Received remote track from", email);
       setRemoteStreams(prev => {
         const existing = prev.find(p => p.id === id);
         if (existing) return prev;
@@ -345,9 +295,7 @@ const Room = () => {
     };
 
     peer.peer.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("peer:candidate", { candidate: event.candidate, to: id });
-      }
+      if (event.candidate) socket.emit("peer:candidate", { candidate: event.candidate, to: id });
     };
 
     peer.peer.ondatachannel = (event) => {
@@ -368,59 +316,36 @@ const Room = () => {
         setupFileLogic(peer, email, id);
       }
     };
-
     return peer;
   }, [socket]);
 
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
-
     const startMyStream = async () => {
-      console.log("🚀 Starting media stream...");
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
         setMyStream(stream);
-        console.log("✅ Camera access granted");
-      } catch (err) {
-        console.warn("⚠️ Camera blocked. Reason: Most mobile browsers require HTTPS (ngrok) for camera access.", err);
-        // Vẫn tiếp tục Join để test Chat/File
-      }
+      } catch (err) { console.warn("Camera blocked", err); }
       socket.emit("room:join", { email: myEmail, room: currentRoom });
     };
-
     startMyStream();
-
-    return () => {
-      if (myStream) myStream.getTracks().forEach(t => t.stop());
-    };
+    return () => { if (myStream) myStream.getTracks().forEach(t => t.stop()); };
   }, []);
 
   useEffect(() => {
     const handleUserJoined = async ({ email, id }) => {
       console.log(`👤 New user joined: ${email} (${id})`);
       const peer = createPeer(id, email, myStream);
-
       peer.chatChannel = peer.peer.createDataChannel("chat");
-      peer.chatChannel.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          setMessages(prev => [...prev, { id: Date.now(), text: data.text, fromEmail: email, fromSelf: false, time: data.time }]);
-        } catch (err) {
-          setMessages(prev => [...prev, { id: Date.now(), text: e.data, fromEmail: email, fromSelf: false, time: "Now" }]);
-        }
-      };
-
       peer.fileChannel = peer.peer.createDataChannel("file");
       setupFileLogic(peer, email, id);
-
       peersRef.current[id] = peer;
       const offer = await peer.getOffer();
       socket.emit("user:call", { to: id, offer });
     };
 
     const handleIncomingCall = async ({ from, offer, fromEmail }) => {
-      console.log("Incoming call from:", fromEmail);
       const peer = createPeer(from, fromEmail, myStream);
       peersRef.current[from] = peer;
       const answer = await peer.getAnswer(offer);
@@ -428,26 +353,16 @@ const Room = () => {
     };
 
     const handleCallAccepted = async ({ from, ans }) => {
-      console.log("Call accepted by:", from);
-      if (peersRef.current[from]) {
-        await peersRef.current[from].setLocalDescription(ans);
-      }
+      if (peersRef.current[from]) await peersRef.current[from].setLocalDescription(ans);
     };
 
     const handlePeerCandidate = async ({ candidate, from }) => {
-      if (peersRef.current[from]) {
-        await peersRef.current[from].addIceCandidate(candidate);
-      }
+      if (peersRef.current[from]) await peersRef.current[from].addIceCandidate(candidate);
     };
 
     const handleUserLeft = ({ id, email }) => {
-      console.log(`👋 User left: ${email || id}`);
       setRemoteStreams(prev => prev.filter(p => p.id !== id));
-      if (peersRef.current[id]) {
-        peersRef.current[id].peer.close();
-        delete peersRef.current[id];
-      }
-      // Nếu người bị xóa đang được ghim, chuyển về ghim local
+      if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
       setPinnedId(prev => prev === id ? 'local' : prev);
     };
 
@@ -478,63 +393,28 @@ const Room = () => {
       <main className="main-content">
         <div className="video-section">
           <div className="controls-bar">
-            <button className={`btn-control ${isScreenSharing ? 'active' : ''}`} onClick={handleScreenShare}>
-              {isScreenSharing ? 'Stop Screen' : 'Screen'}
-            </button>
-            <button className={`btn-control ${isRecording ? 'active' : ''}`} onClick={isRecording ? stopRecording : startRecording}>
-              {isRecording ? 'Stop Record' : 'Record'}
-            </button>
+            <button className={`btn-control ${isScreenSharing ? 'active' : ''}`} onClick={handleScreenShare}>{isScreenSharing ? 'Stop Screen' : 'Screen'}</button>
+            <button className={`btn-control ${isRecording ? 'active' : ''}`} onClick={isRecording ? stopRecording : startRecording}>{isRecording ? 'Stop Record' : 'Record'}</button>
             <button className="btn-control" onClick={() => fileInputRef.current?.click()}>📁 File</button>
             <input ref={fileInputRef} type="file" onChange={handleFileSelect} style={{ display: 'none' }} />
             <div className="status-progress-container">
-              {Object.entries(uploadProgress).map(([fileId, p]) => {
-                const f = files.find(f => f.id === fileId);
-                return (
-                  <ProgressItem
-                    key={fileId}
-                    name={f?.name || "File"}
-                    progress={p}
-                    type="upload"
-                    onCancel={() => f && handleCancelFile(fileId, f.peerId)}
-                  />
-                );
-              })}
-              {Object.entries(downloadProgress).map(([fileId, p]) => {
-                const f = files.find(f => f.id === fileId);
-                return (
-                  <ProgressItem
-                    key={fileId}
-                    name={f?.name || "File"}
-                    progress={p}
-                    type="download"
-                    onCancel={() => f && handleCancelFile(fileId, f.peerId)}
-                  />
-                );
-              })}
+              {Object.entries(uploadProgress).map(([fId, p]) => (
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || "File"} progress={p} type="upload" onCancel={() => handleCancelFile(fId, files.find(f => f.id === fId)?.peerId)} />
+              ))}
+              {Object.entries(downloadProgress).map(([fId, p]) => (
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || "File"} progress={p} type="download" onCancel={() => handleCancelFile(fId, files.find(f => f.id === fId)?.peerId)} />
+              ))}
             </div>
           </div>
           <div className={`video-layout ${pinnedId ? 'spotlight' : 'grid'}`}>
-            {pinnedId && pStream && (
-              <div className="pinned-video-container">
-                <VideoPlayer stream={pStream.stream} isLocal={pStream.id === 'local'} email={`${pStream.email} (Pinned)`} id={pStream.id} onPin={handlePin} isPinned={true} />
-              </div>
-            )}
-            <div className="side-videos-grid">
-              {otherStreams.map(s => (
-                <VideoPlayer key={s.id} stream={s.stream} isLocal={s.id === 'local'} email={s.email} id={s.id} onPin={handlePin} isPinned={false} />
-              ))}
-            </div>
+            {pinnedId && pStream && <div className="pinned-video-container"><VideoPlayer stream={pStream.stream} isLocal={pStream.id === 'local'} email={`${pStream.email} (Pinned)`} id={pStream.id} onPin={handlePin} isPinned={true} /></div>}
+            <div className="side-videos-grid">{otherStreams.map(s => <VideoPlayer key={s.id} stream={s.stream} isLocal={s.id === 'local'} email={s.email} id={s.id} onPin={handlePin} isPinned={false} />)}</div>
           </div>
         </div>
         <aside className="side-panel">
           <div className="chat-box">
             <div className="panel-header">💬 Chat</div>
-            <div className="chat-messages">{messages.map(m => (
-              <div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>
-                {!m.fromSelf && <small>{m.fromEmail}</small>}
-                <p>{m.text}</p><div className="message-time">{m.time}</div>
-              </div>
-            ))}</div>
+            <div className="chat-messages">{messages.map(m => (<div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>{!m.fromSelf && <small>{m.fromEmail}</small>}<p>{m.text}</p><div className="message-time">{m.time}</div></div>))}</div>
             <div className="chat-input-wrapper">
               <input value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Type..." />
               <button className="btn-send" onClick={handleSendMessage}>Send</button>
