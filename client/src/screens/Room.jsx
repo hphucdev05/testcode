@@ -232,10 +232,13 @@ const Room = () => {
               startTime: Date.now()
             }]);
           } else if (msg.type === 'file:request') {
-            const file = Array.from(outboundFilesRef.current).find(f => f.name === msg.name);
+            const file = outboundFilesRef.current[msg.fileId];
             if (file) {
+              console.log(`📤 Starting to send file: ${file.name}`);
               activeTransfers.current.add(msg.fileId);
               sendFileInChunks(peer, file, msg.fileId);
+            } else {
+              console.error("❌ File not found in outbound cache!");
             }
           } else if (msg.type === 'file:pause') {
             pausedTransfers.current.add(msg.fileId);
