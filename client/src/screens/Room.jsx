@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, memo, useCallback } from "react";
 import { useSocket } from "../context/SocketProvider";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import PeerService from "../services/Peer";
 import '../Room.css';
 
@@ -10,13 +10,10 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
 
   useEffect(() => {
     if (videoRef.current && stream) {
-      console.log(`Setting stream for ${email}`);
       videoRef.current.srcObject = stream;
-
       const handlePlay = () => {
         videoRef.current.play().catch(err => console.log("Autoplay error:", err));
       };
-
       videoRef.current.onloadedmetadata = handlePlay;
       handlePlay();
     }
@@ -64,6 +61,7 @@ const ProgressItem = ({ id, name, progress, type, onCancel }) => (
 
 const Room = () => {
   const socket = useSocket();
+  const navigate = useNavigate();
   const { roomId } = useParams();
   const myEmail = localStorage.getItem('userEmail') || 'Anonymous';
   const currentRoom = roomId || localStorage.getItem('currentRoom') || '1';
@@ -148,13 +146,18 @@ const Room = () => {
               // Chú ý: buffer.receivedSize có thể về đích trước cả 6 giây
               const waitFinish = setInterval(() => {
                 const elapsed = Date.now() - buffer.startTime;
+                const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
+                setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
+
                 if (elapsed >= 6000) {
                   clearInterval(waitFinish);
                   const blob = new Blob(buffer.chunks);
                   const url = URL.createObjectURL(blob);
                   setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
-                  setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-                  delete inboundBuffersRef.current[msg.fileId];
+                  setTimeout(() => {
+                    setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
+                    delete inboundBuffersRef.current[msg.fileId];
+                  }, 500);
                 }
               }, 100);
             }
@@ -320,6 +323,16 @@ const Room = () => {
   }, [socket]);
 
   useEffect(() => {
+    // Nếu refresh trang hoặc quay lại, quay về Lobby
+    const handleUnload = () => {
+      socket.emit("user:leave", { room: currentRoom, email: myEmail });
+    };
+    window.addEventListener("beforeunload", handleUnload);
+
+    if (window.performance && window.performance.getEntriesByType("navigation")[0]?.type === "reload") {
+      navigate("/");
+    }
+
     if (initialized.current) return;
     initialized.current = true;
     const startMyStream = async () => {
@@ -330,8 +343,11 @@ const Room = () => {
       socket.emit("room:join", { email: myEmail, room: currentRoom });
     };
     startMyStream();
-    return () => { if (myStream) myStream.getTracks().forEach(t => t.stop()); };
-  }, []);
+    return () => {
+      window.removeEventListener("beforeunload", handleUnload);
+      if (myStream) myStream.getTracks().forEach(t => t.stop());
+    };
+  }, [navigate]);
 
   useEffect(() => {
     const handleUserJoined = async ({ email, id }) => {
