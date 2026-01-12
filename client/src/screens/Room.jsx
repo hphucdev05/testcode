@@ -11,7 +11,7 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => { });
+      videoRef.current.play().catch(e => console.error("Video play error:", e));
     }
   }, [stream]);
 
@@ -20,7 +20,7 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
       {stream ? (
         <video ref={videoRef} autoPlay playsInline muted={isLocal} style={isLocal ? { transform: "scaleX(-1)" } : {}} />
       ) : (
-        <div className="camera-off"><span>📷</span><p>Camera Off</p></div>
+        <div className="camera-off"><span>📷</span><p>{isLocal ? "My Camera" : "Connecting..."}</p></div>
       )}
       <div className="user-tag">{isPinned && "📌 "}{email}</div>
     </div>
@@ -77,8 +77,9 @@ const Room = () => {
   const fileInputRef = useRef(null);
   const outboundFilesRef = useRef({});
   const inboundBuffersRef = useRef({});
+  // activeTransfers bây giờ sẽ quản lý theo key: "fileId-peerId" để tách biệt từng kết nối
   const activeTransfers = useRef(new Set());
-  const progressTimers = useRef({}); // Quản lý Timer để hủy ngay lập tức
+  const progressTimers = useRef({});
 
   const handlePin = (id) => setPinnedId(prev => (prev === id ? null : id));
 
@@ -88,11 +89,13 @@ const Room = () => {
       if (!isScreenSharing) {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const videoTrack = stream.getVideoTracks()[0];
+
         Object.values(peersRef.current).forEach(p => {
           const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
           if (sender) sender.replaceTrack(videoTrack);
         });
-        videoTrack.onended = () => stopScreenShare();
+
+        videoTrack.onended = () => { stopScreenShare(); };
         setIsScreenSharing(true);
       } else {
         stopScreenShare();
@@ -133,18 +136,18 @@ const Room = () => {
   };
   const stopRecording = () => { mediaRecorder?.stop(); setIsRecording(false); };
 
-  // --- CHAT ---
+  // --- CHAT LOGIC ---
   const handleSendMessage = () => {
-    if (!message.trim()) return;
+    const trimmed = message.trim();
+    if (!trimmed) return;
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const payload = JSON.stringify({ text: message, time });
+    const payload = JSON.stringify({ text: trimmed, time });
 
     Object.values(peersRef.current).forEach(p => {
       if (p.chatChannel && p.chatChannel.readyState === "open") p.chatChannel.send(payload);
     });
 
-    // Cập nhật ngay lập tức UI local
-    setMessages(prev => [...prev, { id: Date.now(), text: message, fromEmail: myEmail, fromSelf: true, time }]);
+    setMessages(prev => [...prev, { id: Date.now(), text: trimmed, fromEmail: myEmail, fromSelf: true, time }]);
     setMessage("");
   };
 
@@ -153,47 +156,67 @@ const Room = () => {
     const file = e.target.files[0];
     if (!file) return;
     const fileId = `file-${Date.now()}`;
+    // Store file reference
     outboundFilesRef.current[fileId] = file;
+
+    // Gửi Offer cho TẤT CẢ mọi người
     Object.values(peersRef.current).forEach(p => {
       if (p.fileChannel && p.fileChannel.readyState === "open") {
         p.fileChannel.send(JSON.stringify({ type: "file:offer", fileId, name: file.name, size: file.size }));
       }
     });
+
     setFiles(prev => [...prev, { id: fileId, name: file.name, size: file.size, status: 'offered', type: 'sent' }]);
     e.target.value = '';
   };
 
-  // Hàm Hủy File chuẩn: Dừng Timer, Dừng Gửi, Báo Bên Kia, Giữ UI "Cancelled"
   const handleCancelFile = (fileId) => {
-    // 1. Dừng ngay Timer Progress (Fix lỗi bên nhận vẫn chạy 100%)
-    if (progressTimers.current[fileId]) {
-      clearInterval(progressTimers.current[fileId]);
-      delete progressTimers.current[fileId];
-    }
-
-    // 2. Ngắt luồng gửi/nhận
-    activeTransfers.current.delete(fileId);
-
-    // 3. Gửi tín hiệu Cancel cho đối tác
     const file = files.find(f => f.id === fileId);
-    if (file) {
-      // Gửi cho tất cả peer (đơn giản hóa)
+    if (!file) return;
+
+    if (file.type === 'sent') {
+      // TÔI LÀ NGƯỜI GỬI: Hủy hết cho mọi người
+      // 1. Dừng gửi
+      // Vì gửi cho nhiều người, activeTransfers có thể chứa "fileId-peerA", "fileId-peerB"...
+      // Ta sẽ clear tất cả các key bắt đầu bằng fileId
+      const keys = [...activeTransfers.current];
+      keys.forEach(k => { if (k.startsWith(fileId)) activeTransfers.current.delete(k); });
+
+      // 2. Gửi lệnh Cancel cho TẤT CẢ
       Object.values(peersRef.current).forEach(p => {
         if (p.fileChannel && p.fileChannel.readyState === "open") {
           try { p.fileChannel.send(JSON.stringify({ type: "file:cancel", fileId })); } catch (e) { }
         }
       });
+
+      // 3. UI
+      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'cancelled' } : f));
+      setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
+
+    } else {
+      // TÔI LÀ NGƯỜI NHẬN: Chỉ hủy phần tôi nhận
+      const peerId = file.peerId;
+      const transferKey = `${fileId}-${peerId}`;
+      activeTransfers.current.delete(transferKey);
+
+      if (progressTimers.current[fileId]) {
+        clearInterval(progressTimers.current[fileId]);
+        delete progressTimers.current[fileId];
+      }
+
+      // Gửi lệnh Cancel cho NGƯỜI GỬI (chỉ 1 người)
+      if (peerId && peersRef.current[peerId]) {
+        const p = peersRef.current[peerId];
+        if (p.fileChannel && p.fileChannel.readyState === "open") {
+          try { p.fileChannel.send(JSON.stringify({ type: "file:cancel", fileId })); } catch (e) { }
+        }
+      }
+
+      // UI
+      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'cancelled' } : f));
+      setDownloadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
+      delete inboundBuffersRef.current[fileId];
     }
-
-    // 4. Update UI: KHÔNG XÓA, chỉ đổi status thành Cancelled
-    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'cancelled' } : f));
-
-    // 5. Dọn dẹp Progress Bar UI (để lại 1 lúc rồi xóa hoặc xóa luôn tùy ý - ở đây ta xóa bar nhưng giữ file trong list)
-    setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
-    setDownloadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
-
-    // 6. Xóa buffer
-    delete inboundBuffersRef.current[fileId];
   };
 
   const setupFileLogic = (peer, email, id) => {
@@ -202,27 +225,50 @@ const Room = () => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'file:offer') {
-            setFiles(prev => [...prev, { id: msg.fileId, peerId: id, name: msg.name, size: msg.size, status: 'pending', from: email }]);
+            // Nhận offer từ Sender
+            setFiles(prev => [...prev, { id: msg.fileId, peerId: id, name: msg.name, size: msg.size, status: 'pending', from: email, type: 'received' }]);
+
           } else if (msg.type === 'file:request') {
+            // Sender nhận request từ Receiver (id)
             const file = outboundFilesRef.current[msg.fileId];
-            if (file) { activeTransfers.current.add(msg.fileId); sendFileInChunks(peer, file, msg.fileId); }
-          } else if (msg.type === 'file:cancel') {
-            // Nhận tín hiệu hủy từ bên kia
-            if (progressTimers.current[msg.fileId]) {
-              clearInterval(progressTimers.current[msg.fileId]);
-              delete progressTimers.current[msg.fileId];
+            if (file) {
+              const transferKey = `${msg.fileId}-${id}`; // Key duy nhất cho tiến trình gửi này
+              activeTransfers.current.add(transferKey);
+              sendFileInChunks(peer, file, msg.fileId, id, transferKey);
             }
-            activeTransfers.current.delete(msg.fileId);
-            setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'cancelled' } : f));
-            setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
-            setUploadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
-            delete inboundBuffersRef.current[msg.fileId];
+
+          } else if (msg.type === 'file:cancel') {
+            // Nhận tín hiệu hủy
+            // Nếu tôi là Sender -> Receiver (id) muốn hủy nhận
+            const transferKey = `${msg.fileId}-${id}`;
+            if (activeTransfers.current.has(transferKey)) {
+              activeTransfers.current.delete(transferKey); // Dừng gửi cho riêng người này
+              // UI: Không cần đổi status file chính thành Cancelled, vì có thể đang gửi cho người khác.
+              // Có thể hiện notification nhỏ hoặc bỏ qua.
+            }
+
+            // Nếu tôi là Receiver -> Sender hủy gửi (TOÀN BỘ)
+            // Cần kiểm tra xem msg có phải từ Sender của file này không
+            const myFile = files.find(f => f.id === msg.fileId && f.peerId === id);
+            if (myFile) {
+              if (progressTimers.current[msg.fileId]) {
+                clearInterval(progressTimers.current[msg.fileId]);
+                delete progressTimers.current[msg.fileId];
+              }
+              setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'cancelled' } : f));
+              setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
+              delete inboundBuffersRef.current[msg.fileId];
+            }
+
           } else if (msg.type === 'file:complete') {
             const buffer = inboundBuffersRef.current[msg.fileId];
             if (buffer) {
               const checkDone = setInterval(() => {
                 const elapsed = Date.now() - buffer.startTime;
-                // Lưu timer này để có thể cancel
+                // Timer safety check
+                const myFile = files.find(f => f.id === msg.fileId);
+                if (myFile && myFile.status === 'cancelled') { clearInterval(checkDone); return; }
+
                 if (!progressTimers.current[msg.fileId]) progressTimers.current[msg.fileId] = checkDone;
 
                 const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
@@ -243,8 +289,25 @@ const Room = () => {
           }
         } catch (err) { console.error("File Msg Error", err); }
       } else {
-        const activeId = Object.keys(inboundBuffersRef.current)[0];
-        if (activeId) { inboundBuffersRef.current[activeId].chunks.push(e.data); }
+        // NHẬN DATA CHUNK
+        // Logic nhận chunk cần biết fileId tương ứng.
+        // Ở đây giả sử mỗi lần chỉ nhận 1 file từ 1 người, hoặc cơ chế muxing phức tạp hơn.
+        // Để đơn giản cho demo P2P 1-1 per peer:
+        // inboundBuffersRef.current lưu các file đang nhận.
+        // Ta cần biết chunk này của file nào.
+        // *** Lưu ý: WebRTC DataChannel gửi binary raw không kèm metadata.
+        // -> Ta phải dựa vào giả định Peer chỉ gửi 1 file tại 1 thời điểm qua channel này.
+        // Hoặc Sender gửi ArrayBuffer có header.
+        // Trong code hiện tại: inboundBuffersRef lấy cái đầu tiên.
+        // Nếu nhận nhiều file cùng lúc từ cùng 1 người -> LỖI.
+        // FIX: Giả định 1 người gửi 1 file 1 lúc.
+        const activeFilesFromPeer = files.filter(f => f.peerId === id && f.status === 'receiving');
+        if (activeFilesFromPeer.length > 0) {
+          const activeFileId = activeFilesFromPeer[0].id; // Lấy file đang nhận từ peer này
+          if (activeFileId && inboundBuffersRef.current[activeFileId]) {
+            inboundBuffersRef.current[activeFileId].chunks.push(e.data);
+          }
+        }
       }
     };
   };
@@ -252,79 +315,114 @@ const Room = () => {
   const acceptFile = (peerId, fileId, name, size) => {
     const peer = peersRef.current[peerId];
     if (peer) {
+      const transferKey = `${fileId}-${peerId}`;
+      activeTransfers.current.add(transferKey); // Đánh dấu tôi đang nhận file này
+
       const startTime = Date.now();
-      inboundBuffersRef.current[fileId] = { name, size, chunks: [], startTime };
+      inboundBuffersRef.current[fileId] = { name, size, chunks: [], startTime, status: 'receiving' };
       peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
 
       const interval = setInterval(() => {
+        // Cancel check
+        if (!activeTransfers.current.has(transferKey)) { clearInterval(interval); return; }
+
         const elapsed = Date.now() - startTime;
         const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
         setDownloadProgress(prev => ({ ...prev, [fileId]: p }));
+
         if (elapsed >= 6000 || !inboundBuffersRef.current[fileId]) {
           clearInterval(interval);
           if (progressTimers.current[fileId] === interval) delete progressTimers.current[fileId];
         }
       }, 100);
-      progressTimers.current[fileId] = interval; // Lưu timer để hủy
+      progressTimers.current[fileId] = interval;
     }
   };
 
-  const sendFileInChunks = async (peer, file, fileId) => {
+  const sendFileInChunks = async (peer, file, fileId, toPeerId, transferKey) => {
     const reader = file.stream().getReader();
     const startTime = Date.now();
     try {
       while (true) {
-        if (!activeTransfers.current.has(fileId)) break;
+        // CHECK CANCEL FLAG ĐỘC LẬP
+        if (!activeTransfers.current.has(transferKey)) {
+          reader.cancel();
+          break;
+        }
+
         const { done, value } = await reader.read();
         if (done) break;
-        peer.fileChannel.send(value);
-        const p = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 100);
-        setUploadProgress(prev => ({ ...prev, [fileId]: p }));
+
+        if (peer.fileChannel.readyState !== "open") break;
+        try { peer.fileChannel.send(value); } catch (err) { break; }
+
+        // Update progress (chỉ UI gửi, không cần tách peerId nếu muốn đơn giản, hoặc dùng fileId làm key chung)
+        if (activeTransfers.current.has(transferKey)) {
+          const p = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 100);
+          setUploadProgress(prev => ({ ...prev, [fileId]: p }));
+        }
+
         if (file.size < 1000000) await new Promise(r => setTimeout(r, 60));
       }
 
-      // Fake progress finish loop (nếu gửi xong sớm)
-      if (activeTransfers.current.has(fileId)) {
-        // Tạo loop để chạy nốt time còn lại cho đủ 6s
-        // Tuy nhiên, vì logic gửi file chạy async nên khó clear interval từ ngoài.
-        // Ta check activeTransfers ở mỗi vòng lặp là đủ an toàn.
-        while (activeTransfers.current.has(fileId)) {
+      // Fake progress
+      if (activeTransfers.current.has(transferKey)) {
+        while (activeTransfers.current.has(transferKey)) {
           const elapsed = Date.now() - startTime;
           if (elapsed >= 6000) break;
           setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round((elapsed / 6000) * 100), 100) }));
-          await new Promise(r => setTimeout(r, 100)); // Sleep
+          await new Promise(r => setTimeout(r, 100));
         }
       }
 
-      if (activeTransfers.current.has(fileId)) {
+      if (activeTransfers.current.has(transferKey)) {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
         setTimeout(() => setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; }), 500);
+        activeTransfers.current.delete(transferKey);
       }
     } catch (err) { console.error(err); }
   };
 
-  const createPeer = useCallback((id, email, stream) => {
+  const createPeer = useCallback((id, email, stream, initiator = false) => {
     const peer = new PeerService();
     if (stream) stream.getTracks().forEach(track => peer.peer.addTrack(track, stream));
-    peer.peer.ontrack = (event) => setRemoteStreams(prev => prev.find(p => p.id === id) ? prev : [...prev, { id, email, stream: event.streams[0] }]);
+
     peer.peer.onicecandidate = (e) => e.candidate && socket.emit("peer:candidate", { candidate: e.candidate, to: id });
-    peer.peer.ondatachannel = (event) => {
-      const channel = event.channel;
-      if (channel.label === "chat") {
-        peer.chatChannel = channel;
-        channel.onmessage = (e) => {
-          try {
-            const d = JSON.parse(e.data);
-            setMessages(prev => [...prev, { id: Date.now(), text: d.text, fromEmail: email, fromSelf: false, time: d.time }]);
-          } catch (err) {
-            setMessages(prev => [...prev, { id: Date.now(), text: e.data, fromEmail: email, fromSelf: false, time: "Now" }]);
-          }
-        };
-      }
-      if (channel.label === "file") { peer.fileChannel = channel; setupFileLogic(peer, email, id); }
+    peer.peer.ontrack = (event) => {
+      setRemoteStreams(prev => prev.find(p => p.id === id) ? prev : [...prev, { id, email, stream: event.streams[0] }]);
     };
+
+    if (initiator) {
+      peer.chatChannel = peer.peer.createDataChannel("chat");
+      peer.fileChannel = peer.peer.createDataChannel("file");
+
+      peer.chatChannel.onmessage = (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setMessages(prev => [...prev, { id: Date.now(), text: d.text, fromEmail: email, fromSelf: false, time: d.time }]);
+        } catch (err) { }
+      };
+      setupFileLogic(peer, email, id);
+    } else {
+      peer.peer.ondatachannel = (event) => {
+        const channel = event.channel;
+        if (channel.label === "chat") {
+          peer.chatChannel = channel;
+          channel.onmessage = (e) => {
+            try {
+              const d = JSON.parse(e.data);
+              setMessages(prev => [...prev, { id: Date.now(), text: d.text, fromEmail: email, fromSelf: false, time: d.time }]);
+            } catch (err) { }
+          };
+        }
+        if (channel.label === "file") {
+          peer.fileChannel = channel;
+          setupFileLogic(peer, email, id);
+        }
+      };
+    }
     return peer;
   }, [socket]);
 
@@ -355,22 +453,19 @@ const Room = () => {
 
   useEffect(() => {
     const handleJoined = async ({ email, id }) => {
-      const p = createPeer(id, email, myStreamRef.current);
-      p.chatChannel = p.peer.createDataChannel("chat");
-      p.fileChannel = p.peer.createDataChannel("file");
-      setupFileLogic(p, email, id);
+      const p = createPeer(id, email, myStreamRef.current, true);
       peersRef.current[id] = p;
       const offer = await p.getOffer();
       socket.emit("user:call", { to: id, offer });
     };
     const handleInCall = async ({ from, offer, fromEmail }) => {
-      const p = createPeer(from, fromEmail, myStreamRef.current);
+      const p = createPeer(from, fromEmail, myStreamRef.current, false);
       peersRef.current[from] = p;
       const answer = await p.getAnswer(offer);
       socket.emit("call:accepted", { to: from, ans: answer });
     };
     const handleAccepted = async ({ from, ans }) => peersRef.current[from] && await peersRef.current[from].setLocalDescription(ans);
-    const handleCandidate = async ({ candidate, from }) => peersRef.current[from] && await peersRef.current[from].addIceCandidate(candidate);
+    const handleCandidate = async ({ candidate, from }) => { if (peersRef.current[from]) await peersRef.current[from].addIceCandidate(candidate); };
     const handleLeft = ({ id }) => {
       setRemoteStreams(prev => prev.filter(s => s.id !== id));
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
