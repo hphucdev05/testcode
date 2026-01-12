@@ -187,6 +187,12 @@ const Room = () => {
     const fileId = `file-${Date.now()}`;
     outboundFilesRef.current[fileId] = file;
 
+    // --- DEMO EVIDENCE: SENDER SIDE ---
+    console.log(`%c [P2P Sender] 📤 File Loaded into Memory Reference!`, 'color: #ff9900; font-weight: bold;');
+    console.log(`📄 Name: ${file.name}`);
+    console.log(`📦 Size: ${formatBytes(file.size)}`);
+    // ----------------------------------
+
     let sentCount = 0;
     Object.values(peersRef.current).forEach(p => {
       if (p.fileChannel && p.fileChannel.readyState === "open") {
