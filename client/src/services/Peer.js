@@ -2,19 +2,37 @@ class PeerService {
   constructor() {
     this.peer = new RTCPeerConnection({
       iceServers: [
+        // Google STUN High Availability
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" },
+        // Mozilla STUN
+        { urls: "stun:stun.services.mozilla.com" },
+        // Twilio STUN (Global)
+        { urls: "stun:global.stun.twilio.com:3478" },
+        // Free TURN (OpenRelay - Thử nghiệm, có thể chậm nhưng giúp xuyên NAT)
         {
-          urls: [
-            "stun:stun.l.google.com:19302",
-            "stun:stun1.l.google.com:19302",
-            "stun:stun2.l.google.com:19302",
-            "stun:stun3.l.google.com:19302",
-            "stun:stun4.l.google.com:19302",
-            "stun:stun.services.mozilla.com",
-            "stun:global.stun.twilio.com:3478",
-          ],
+          urls: "turn:openrelay.metered.ca:80",
+          username: "openrelayproject",
+          credential: "openrelayproject"
         },
+        {
+          urls: "turn:openrelay.metered.ca:443",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        },
+        {
+          urls: "turn:openrelay.metered.ca:443?transport=tcp",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        }
       ],
       iceCandidatePoolSize: 10,
+      iceTransportPolicy: 'all', // Cho phép cả Relay và Host
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
     });
 
     this.chatChannel = null;
@@ -26,13 +44,17 @@ class PeerService {
   // Create offer
   async getOffer() {
     if (this.peer.signalingState !== "stable") return;
-    const offer = await this.peer.createOffer();
+    const offer = await this.peer.createOffer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: true
+    });
     await this.peer.setLocalDescription(offer);
     return offer;
   }
 
   // Create answer
   async getAnswer(offer) {
+    // Đảm bảo setRemote trước
     if (this.peer.signalingState !== "have-remote-offer") {
       await this.peer.setRemoteDescription(new RTCSessionDescription(offer));
     }
@@ -44,7 +66,7 @@ class PeerService {
     return answer;
   }
 
-  // Set remote description (after receiving answer OR offer)
+  // Set remote description 
   async setLocalDescription(ans) {
     if (this.peer.signalingState === "have-local-offer") {
       await this.peer.setRemoteDescription(new RTCSessionDescription(ans));
@@ -62,17 +84,15 @@ class PeerService {
         console.error("Error adding ICE candidate:", error);
       }
     } else {
-      // console.log("Buffering ICE candidate...");
       this.iceCandidateQueue.push(candidate);
     }
   }
 
-  // Process buffered ICE candidates
   processIceQueue() {
     while (this.iceCandidateQueue.length > 0) {
       const candidate = this.iceCandidateQueue.shift();
       this.peer.addIceCandidate(new RTCIceCandidate(candidate))
-        .catch(error => console.error("Error processing buffered ICE:", error));
+        .catch(error => console.error("Process buffered ICE Error:", error));
     }
   }
 }
