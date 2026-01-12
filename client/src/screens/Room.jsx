@@ -27,14 +27,22 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
   );
 });
 
-const ProgressItem = ({ id, name, progress, type, onCancel }) => (
-  <div className={`progress-item ${type}`}>
+const ProgressItem = ({ id, name, progress, type, status, onCancel }) => (
+  <div className={`progress-item ${type} ${status}`}>
     <div className="progress-header">
-      <small>{type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}</small>
-      <button className="btn-close-mini" onClick={onCancel}>×</button>
+      <small>
+        {status === 'cancelled' ? '❌ Cancelled' :
+          status === 'completed' ? '✅ Completed' :
+            type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}
+      </small>
+      {status !== 'cancelled' && status !== 'completed' && (
+        <button className="btn-close-mini" onClick={onCancel} title="Cancel Transfer">×</button>
+      )}
     </div>
     <div className="progress-item-inner">
-      <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }}></div></div>
+      <div className="progress-bar">
+        <div className={`progress-fill ${status === 'cancelled' ? 'cancelled-bar' : ''}`} style={{ width: `${progress}%` }}></div>
+      </div>
       <span>{progress}%</span>
     </div>
   </div>
@@ -53,18 +61,24 @@ const Room = () => {
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
   const [pinnedId, setPinnedId] = useState('local');
+
+  // File State
   const [files, setFiles] = useState([]);
   const [uploadProgress, setUploadProgress] = useState({});
   const [downloadProgress, setDownloadProgress] = useState({});
+
+  // Feature State
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
 
+  // Refs
   const peersRef = useRef({});
   const fileInputRef = useRef(null);
   const outboundFilesRef = useRef({});
   const inboundBuffersRef = useRef({});
   const activeTransfers = useRef(new Set());
+  const progressTimers = useRef({}); // Quản lý Timer để hủy ngay lập tức
 
   const handlePin = (id) => setPinnedId(prev => (prev === id ? null : id));
 
@@ -74,16 +88,11 @@ const Room = () => {
       if (!isScreenSharing) {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const videoTrack = stream.getVideoTracks()[0];
-
         Object.values(peersRef.current).forEach(p => {
           const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
           if (sender) sender.replaceTrack(videoTrack);
         });
-
-        videoTrack.onended = () => {
-          stopScreenShare();
-        };
-
+        videoTrack.onended = () => stopScreenShare();
         setIsScreenSharing(true);
       } else {
         stopScreenShare();
@@ -107,10 +116,8 @@ const Room = () => {
     const chunks = [];
     const tracks = [...(myStreamRef.current?.getTracks() || []), ...remoteStreams.flatMap(s => s.stream.getTracks())];
     if (tracks.length === 0) return;
-
     const stream = new MediaStream(tracks);
     const recorder = new MediaRecorder(stream);
-
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => {
       const blob = new Blob(chunks, { type: 'video/webm' });
@@ -133,11 +140,10 @@ const Room = () => {
     const payload = JSON.stringify({ text: message, time });
 
     Object.values(peersRef.current).forEach(p => {
-      if (p.chatChannel && p.chatChannel.readyState === "open") {
-        p.chatChannel.send(payload);
-      }
+      if (p.chatChannel && p.chatChannel.readyState === "open") p.chatChannel.send(payload);
     });
 
+    // Cập nhật ngay lập tức UI local
     setMessages(prev => [...prev, { id: Date.now(), text: message, fromEmail: myEmail, fromSelf: true, time }]);
     setMessage("");
   };
@@ -157,23 +163,21 @@ const Room = () => {
     e.target.value = '';
   };
 
+  // Hàm Hủy File chuẩn: Dừng Timer, Dừng Gửi, Báo Bên Kia, Giữ UI "Cancelled"
   const handleCancelFile = (fileId) => {
-    // 1. Dừng vòng lặp gửi trong activeTransfers
+    // 1. Dừng ngay Timer Progress (Fix lỗi bên nhận vẫn chạy 100%)
+    if (progressTimers.current[fileId]) {
+      clearInterval(progressTimers.current[fileId]);
+      delete progressTimers.current[fileId];
+    }
+
+    // 2. Ngắt luồng gửi/nhận
     activeTransfers.current.delete(fileId);
 
-    // 2. Tìm file để biết peerId mà gửi thông báo
+    // 3. Gửi tín hiệu Cancel cho đối tác
     const file = files.find(f => f.id === fileId);
-    if (file && file.peerId) {
-      const peer = peersRef.current[file.peerId];
-      if (peer && peer.fileChannel && peer.fileChannel.readyState === "open") {
-        try { peer.fileChannel.send(JSON.stringify({ type: "file:cancel", fileId })); } catch (e) { }
-      }
-    }
-    // (Nếu là người gửi, cần gửi cho tất cả receivers - ở đây demo 1-1 offer đơn giản, 
-    // hoặc broadcast nếu user gửi cho mọi người. 
-    // Logic handleFileSelect hiện tại gửi offer cho ALL.
-    // Để cho đơn giản, nếu là sender (type='sent'), ta gửi cancel cho tất cả.)
-    if (file && file.type === 'sent') {
+    if (file) {
+      // Gửi cho tất cả peer (đơn giản hóa)
       Object.values(peersRef.current).forEach(p => {
         if (p.fileChannel && p.fileChannel.readyState === "open") {
           try { p.fileChannel.send(JSON.stringify({ type: "file:cancel", fileId })); } catch (e) { }
@@ -181,10 +185,14 @@ const Room = () => {
       });
     }
 
-    // 3. Xóa UI
-    setFiles(prev => prev.filter(f => f.id !== fileId));
+    // 4. Update UI: KHÔNG XÓA, chỉ đổi status thành Cancelled
+    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'cancelled' } : f));
+
+    // 5. Dọn dẹp Progress Bar UI (để lại 1 lúc rồi xóa hoặc xóa luôn tùy ý - ở đây ta xóa bar nhưng giữ file trong list)
     setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
     setDownloadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
+
+    // 6. Xóa buffer
     delete inboundBuffersRef.current[fileId];
   };
 
@@ -199,8 +207,13 @@ const Room = () => {
             const file = outboundFilesRef.current[msg.fileId];
             if (file) { activeTransfers.current.add(msg.fileId); sendFileInChunks(peer, file, msg.fileId); }
           } else if (msg.type === 'file:cancel') {
+            // Nhận tín hiệu hủy từ bên kia
+            if (progressTimers.current[msg.fileId]) {
+              clearInterval(progressTimers.current[msg.fileId]);
+              delete progressTimers.current[msg.fileId];
+            }
             activeTransfers.current.delete(msg.fileId);
-            setFiles(prev => prev.filter(f => f.id !== msg.fileId));
+            setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'cancelled' } : f));
             setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
             setUploadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
             delete inboundBuffersRef.current[msg.fileId];
@@ -209,10 +222,14 @@ const Room = () => {
             if (buffer) {
               const checkDone = setInterval(() => {
                 const elapsed = Date.now() - buffer.startTime;
+                // Lưu timer này để có thể cancel
+                if (!progressTimers.current[msg.fileId]) progressTimers.current[msg.fileId] = checkDone;
+
                 const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
                 setDownloadProgress(prev => ({ ...prev, [msg.fileId]: p }));
                 if (elapsed >= 6000) {
                   clearInterval(checkDone);
+                  delete progressTimers.current[msg.fileId];
                   const blob = new Blob(buffer.chunks);
                   const url = URL.createObjectURL(blob);
                   setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
@@ -239,12 +256,17 @@ const Room = () => {
       inboundBuffersRef.current[fileId] = { name, size, chunks: [], startTime };
       peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
+
       const interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
         const p = Math.min(Math.round((elapsed / 6000) * 100), 100);
         setDownloadProgress(prev => ({ ...prev, [fileId]: p }));
-        if (elapsed >= 6000 || !inboundBuffersRef.current[fileId]) clearInterval(interval);
+        if (elapsed >= 6000 || !inboundBuffersRef.current[fileId]) {
+          clearInterval(interval);
+          if (progressTimers.current[fileId] === interval) delete progressTimers.current[fileId];
+        }
       }, 100);
+      progressTimers.current[fileId] = interval; // Lưu timer để hủy
     }
   };
 
@@ -261,12 +283,20 @@ const Room = () => {
         setUploadProgress(prev => ({ ...prev, [fileId]: p }));
         if (file.size < 1000000) await new Promise(r => setTimeout(r, 60));
       }
-      while (activeTransfers.current.has(fileId)) {
-        const elapsed = Date.now() - startTime;
-        if (elapsed >= 6000) break;
-        setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round((elapsed / 6000) * 100), 100) }));
-        await new Promise(r => setTimeout(r, 100));
+
+      // Fake progress finish loop (nếu gửi xong sớm)
+      if (activeTransfers.current.has(fileId)) {
+        // Tạo loop để chạy nốt time còn lại cho đủ 6s
+        // Tuy nhiên, vì logic gửi file chạy async nên khó clear interval từ ngoài.
+        // Ta check activeTransfers ở mỗi vòng lặp là đủ an toàn.
+        while (activeTransfers.current.has(fileId)) {
+          const elapsed = Date.now() - startTime;
+          if (elapsed >= 6000) break;
+          setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round((elapsed / 6000) * 100), 100) }));
+          await new Promise(r => setTimeout(r, 100)); // Sleep
+        }
       }
+
       if (activeTransfers.current.has(fileId)) {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
@@ -378,10 +408,10 @@ const Room = () => {
             <input ref={fileInputRef} type="file" onChange={handleFileSelect} style={{ display: 'none' }} />
             <div className="status-progress-container">
               {Object.entries(uploadProgress).map(([fId, p]) => (
-                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="upload" onCancel={() => handleCancelFile(fId)} />
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="upload" status="uploading" onCancel={() => handleCancelFile(fId)} />
               ))}
               {Object.entries(downloadProgress).map(([fId, p]) => (
-                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="download" onCancel={() => handleCancelFile(fId)} />
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="download" status="downloading" onCancel={() => handleCancelFile(fId)} />
               ))}
             </div>
           </div>
@@ -402,7 +432,7 @@ const Room = () => {
             <div className="panel-header">📂 P2P Files</div>
             <div className="file-list">{files.map(f => (
               <div key={f.id} className="file-item">
-                <div className="file-info"><span className="file-name">{f.name}</span><small>{f.status}</small></div>
+                <div className="file-info"><span className="file-name">{f.name}</span><small className={f.status === 'cancelled' ? 'status-cancelled' : ''}>{f.status}</small></div>
                 {f.status === 'pending' && <button className="btn-send" onClick={() => acceptFile(f.peerId, f.id, f.name, f.size)}>Accept</button>}
                 {f.status === 'completed' && f.url && <a href={f.url} download={f.name} className="dl-btn">💾 Save</a>}
               </div>
