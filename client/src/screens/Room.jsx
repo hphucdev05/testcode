@@ -182,6 +182,17 @@ const Room = () => {
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    // --- SAFETY CHECK: 1GB LIMIT ---
+    // Ngăn chặn Crash do tràn RAM (Browser OOM Limit ~1.4GB)
+    const MAX_SIZE = 1 * 1024 * 1024 * 1024; // 1 GB
+    if (file.size > MAX_SIZE) {
+      alert(`⚠️ File quá lớn (${formatBytes(file.size)})! Trình duyệt giới hạn dưới 1GB để tránh tràn bộ nhớ RAM.`);
+      e.target.value = ""; // Reset input
+      return;
+    }
+    // --------------------------------
+
     fileInputRef.current.value = "";
 
     const fileId = `file-${Date.now()}`;
