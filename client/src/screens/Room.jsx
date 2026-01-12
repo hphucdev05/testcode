@@ -53,9 +53,11 @@ const ProgressItem = ({ id, name, progress, type, status, onCancel }) => (
 const Room = () => {
   const socket = useSocket();
   const navigate = useNavigate();
-  const { roomId } = useParams();
+  // KHỚP TÊN THAM SỐ VỚI APP.JSX (/room/:roomID)
+  const { roomID } = useParams();
   const myEmail = localStorage.getItem('userEmail') || 'Anonymous';
-  const currentRoom = roomId || '1';
+  // Nếu không có roomID (trường hợp hiếm), mới fallback về '1'
+  const currentRoom = roomID || '1';
 
   const [myStream, setMyStream] = useState(null);
   const myStreamRef = useRef(null);
