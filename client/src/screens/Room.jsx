@@ -33,10 +33,10 @@ const ProgressItem = ({ id, name, progress, type, status, onCancel }) => (
       <small>
         {status === 'cancelled' ? '❌ Cancelled' :
           status === 'completed' ? '✅ Completed' :
-            progress === 100 ? '💾 Finalizing...' :
+            progress === 100 ? '✅ Done' :
               type === 'upload' ? '📤 Sending...' : `📥 Receiving ${name}...`}
       </small>
-      {status !== 'cancelled' && status !== 'completed' && (
+      {status !== 'cancelled' && status !== 'completed' && progress !== 100 && (
         <button className="btn-close-mini" onClick={onCancel} title="Cancel Transfer">×</button>
       )}
     </div>
@@ -273,11 +273,11 @@ const Room = () => {
               return f;
             }));
 
-            // Cleanup UI
+            // Cleanup Progress Bar UI IMMEDIATELY after update
             setTimeout(() => {
               setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
               delete inboundBuffersRef.current[msg.fileId];
-            }, 1000);
+            }, 500); // 0.5s fade out
 
             if (progressTimers.current[msg.fileId]) {
               clearInterval(progressTimers.current[msg.fileId]);
@@ -289,7 +289,6 @@ const Room = () => {
           if (elapsed >= 6000) {
             finishDownload();
           } else {
-            // Wait remaining time then finish
             setTimeout(finishDownload, 6000 - elapsed);
           }
         }
@@ -328,7 +327,6 @@ const Room = () => {
 
         if (elapsed >= 6000) {
           clearInterval(interval);
-          // Don't delete buffer yet, wait for file:complete
         }
       }, 100);
       progressTimers.current[fileId] = interval;
@@ -372,7 +370,12 @@ const Room = () => {
       if (activeTransfers.current.has(transferKey)) {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
-        // Done
+
+        // CLEANUP Progress Bar for Sender
+        setTimeout(() => {
+          setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
+        }, 500);
+
         activeTransfers.current.delete(transferKey);
       }
     } catch (err) { console.error(err); }
