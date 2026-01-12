@@ -34,10 +34,11 @@ io.on("connection", (socket) => {
     // Xử lý nạp dữ liệu mượt mà khi refresh (Tránh Ghost Users)
     const oldSocketId = emailToSocketIdMap.get(email);
     if (oldSocketId && oldSocketId !== socket.id) {
-      console.log(`🔄 Cleaning up ghost user: ${email}`);
+      console.log(`🔄 Force cleaning ghost user: ${email} (${oldSocketId})`);
       const oldRoom = socketIdToRoomMap.get(oldSocketId);
       if (oldRoom) {
-        socket.to(oldRoom).emit("user:left", { id: oldSocketId, email });
+        // Thông báo cho MỌI NGƯỜI trong phòng xóa User cũ này ngay lập tức
+        io.to(oldRoom).emit("user:left", { id: oldSocketId, email });
       }
       socketIdToEmailMap.delete(oldSocketId);
       socketIdToRoomMap.delete(oldSocketId);
