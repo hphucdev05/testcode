@@ -48,7 +48,7 @@ const Room = () => {
   const currentRoom = roomId || '1';
 
   const [myStream, setMyStream] = useState(null);
-  const myStreamRef = useRef(null); // Ref để giữ stream mới nhất mà không gây re-render effect
+  const myStreamRef = useRef(null);
   const [remoteStreams, setRemoteStreams] = useState([]);
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
@@ -75,13 +75,11 @@ const Room = () => {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const videoTrack = stream.getVideoTracks()[0];
 
-        // Thay thế track cho tất cả peer
         Object.values(peersRef.current).forEach(p => {
           const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
           if (sender) sender.replaceTrack(videoTrack);
         });
 
-        // Xử lý khi user bấm "Stop sharing" trên trình duyệt
         videoTrack.onended = () => {
           stopScreenShare();
         };
@@ -134,7 +132,6 @@ const Room = () => {
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const payload = JSON.stringify({ text: message, time });
 
-    // Gửi an toàn
     Object.values(peersRef.current).forEach(p => {
       if (p.chatChannel && p.chatChannel.readyState === "open") {
         p.chatChannel.send(payload);
@@ -158,6 +155,37 @@ const Room = () => {
     });
     setFiles(prev => [...prev, { id: fileId, name: file.name, size: file.size, status: 'offered', type: 'sent' }]);
     e.target.value = '';
+  };
+
+  const handleCancelFile = (fileId) => {
+    // 1. Dừng vòng lặp gửi trong activeTransfers
+    activeTransfers.current.delete(fileId);
+
+    // 2. Tìm file để biết peerId mà gửi thông báo
+    const file = files.find(f => f.id === fileId);
+    if (file && file.peerId) {
+      const peer = peersRef.current[file.peerId];
+      if (peer && peer.fileChannel && peer.fileChannel.readyState === "open") {
+        try { peer.fileChannel.send(JSON.stringify({ type: "file:cancel", fileId })); } catch (e) { }
+      }
+    }
+    // (Nếu là người gửi, cần gửi cho tất cả receivers - ở đây demo 1-1 offer đơn giản, 
+    // hoặc broadcast nếu user gửi cho mọi người. 
+    // Logic handleFileSelect hiện tại gửi offer cho ALL.
+    // Để cho đơn giản, nếu là sender (type='sent'), ta gửi cancel cho tất cả.)
+    if (file && file.type === 'sent') {
+      Object.values(peersRef.current).forEach(p => {
+        if (p.fileChannel && p.fileChannel.readyState === "open") {
+          try { p.fileChannel.send(JSON.stringify({ type: "file:cancel", fileId })); } catch (e) { }
+        }
+      });
+    }
+
+    // 3. Xóa UI
+    setFiles(prev => prev.filter(f => f.id !== fileId));
+    setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
+    setDownloadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; });
+    delete inboundBuffersRef.current[fileId];
   };
 
   const setupFileLogic = (peer, email, id) => {
@@ -191,7 +219,7 @@ const Room = () => {
                   setTimeout(() => {
                     setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
                     delete inboundBuffersRef.current[msg.fileId];
-                  }, 1000);
+                  }, 500);
                 }
               }, 100);
             }
@@ -242,25 +270,16 @@ const Room = () => {
       if (activeTransfers.current.has(fileId)) {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
-        setTimeout(() => setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; }), 1000);
+        setTimeout(() => setUploadProgress(prev => { let n = { ...prev }; delete n[fileId]; return n; }), 500);
       }
     } catch (err) { console.error(err); }
   };
 
-  // --- PEER & SOCKET SETUP ---
-
   const createPeer = useCallback((id, email, stream) => {
     const peer = new PeerService();
     if (stream) stream.getTracks().forEach(track => peer.peer.addTrack(track, stream));
-
-    peer.peer.ontrack = (event) => {
-      setRemoteStreams(prev => {
-        if (prev.find(p => p.id === id)) return prev;
-        return [...prev, { id, email, stream: event.streams[0] }];
-      });
-    };
+    peer.peer.ontrack = (event) => setRemoteStreams(prev => prev.find(p => p.id === id) ? prev : [...prev, { id, email, stream: event.streams[0] }]);
     peer.peer.onicecandidate = (e) => e.candidate && socket.emit("peer:candidate", { candidate: e.candidate, to: id });
-
     peer.peer.ondatachannel = (event) => {
       const channel = event.channel;
       if (channel.label === "chat") {
@@ -270,7 +289,6 @@ const Room = () => {
             const d = JSON.parse(e.data);
             setMessages(prev => [...prev, { id: Date.now(), text: d.text, fromEmail: email, fromSelf: false, time: d.time }]);
           } catch (err) {
-            // Fallback nếu không phải JSON
             setMessages(prev => [...prev, { id: Date.now(), text: e.data, fromEmail: email, fromSelf: false, time: "Now" }]);
           }
         };
@@ -280,42 +298,33 @@ const Room = () => {
     return peer;
   }, [socket]);
 
-  // EFFECT 1: SETUP CONNECTION (CHẠY ĐÚNG 1 LẦN)
   useEffect(() => {
-    // Redirect nếu reload
     const isReload = window.performance && window.performance.getEntriesByType("navigation")[0]?.type === "reload";
     if (isReload && !reloadHandled) { reloadHandled = true; navigate("/"); return; }
 
     const handleBeforeUnload = () => socket.emit("user:leaving", { room: currentRoom });
     window.addEventListener("beforeunload", handleBeforeUnload);
 
-    // Khởi tạo Stream & Join
     const init = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
         setMyStream(stream);
-        myStreamRef.current = stream; // Cập nhật Ref
+        myStreamRef.current = stream;
       } catch (e) { console.warn("No Camera", e); }
-
-      // CHỈ JOIN 1 LẦN DUY NHẤT Ở ĐÂY
       socket.emit("room:join", { email: myEmail, room: currentRoom });
     };
     init();
 
     return () => {
-      // Cleanup khi component unmount
       socket.emit("user:leaving", { room: currentRoom });
       window.removeEventListener("beforeunload", handleBeforeUnload);
       if (myStreamRef.current) myStreamRef.current.getTracks().forEach(t => t.stop());
       Object.values(peersRef.current).forEach(p => p.peer.close());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Dependence RỖNG => Chỉ chạy 1 lần, không bị reset khi stream đổi
+  }, []);
 
-  // EFFECT 2: SOCKET LISTENERS (Độc lập với connection)
   useEffect(() => {
     const handleJoined = async ({ email, id }) => {
-      // Dùng myStreamRef.current để lấy stream mới nhất mà không cần phụ thuộc
       const p = createPeer(id, email, myStreamRef.current);
       p.chatChannel = p.peer.createDataChannel("chat");
       p.fileChannel = p.peer.createDataChannel("file");
@@ -349,7 +358,7 @@ const Room = () => {
       socket.off("peer:candidate", handleCandidate);
       socket.off("user:left", handleLeft);
     };
-  }, [socket, createPeer]); // Bỏ myStream ra khỏi deps
+  }, [socket, createPeer]);
 
   const pStream = pinnedId === 'local' ? { stream: myStream, email: "You", id: 'local' } : remoteStreams.find(r => r.id === pinnedId);
   const otherStreams = [{ stream: myStream, email: "You", id: 'local' }, ...remoteStreams].filter(s => s.id !== pinnedId);
@@ -369,10 +378,10 @@ const Room = () => {
             <input ref={fileInputRef} type="file" onChange={handleFileSelect} style={{ display: 'none' }} />
             <div className="status-progress-container">
               {Object.entries(uploadProgress).map(([fId, p]) => (
-                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name} progress={p} type="upload" onCancel={() => { }} />
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="upload" onCancel={() => handleCancelFile(fId)} />
               ))}
               {Object.entries(downloadProgress).map(([fId, p]) => (
-                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name} progress={p} type="download" onCancel={() => { }} />
+                <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="download" onCancel={() => handleCancelFile(fId)} />
               ))}
             </div>
           </div>
@@ -386,14 +395,14 @@ const Room = () => {
         <aside className="side-panel">
           <div className="chat-box">
             <div className="panel-header">💬 Chat</div>
-            <div className="chat-messages">{messages.map(m => (<div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>{!m.fromSelf && <small>{m.fromEmail}</small>}<p>{m.text}</p></div>))}</div>
-            <div className="chat-input-wrapper"><input value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} /><button onClick={handleSendMessage}>Send</button></div>
+            <div className="chat-messages">{messages.map(m => (<div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>{!m.fromSelf && <small>{m.fromEmail}</small>}<p>{m.text}</p><div className="message-time">{m.time}</div></div>))}</div>
+            <div className="chat-input-wrapper"><input value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Type..." /><button className="btn-send" onClick={handleSendMessage}>Send</button></div>
           </div>
           <div className="file-panel">
             <div className="panel-header">📂 P2P Files</div>
             <div className="file-list">{files.map(f => (
               <div key={f.id} className="file-item">
-                <div className="file-info"><span>{f.name}</span><small>{f.status}</small></div>
+                <div className="file-info"><span className="file-name">{f.name}</span><small>{f.status}</small></div>
                 {f.status === 'pending' && <button className="btn-send" onClick={() => acceptFile(f.peerId, f.id, f.name, f.size)}>Accept</button>}
                 {f.status === 'completed' && f.url && <a href={f.url} download={f.name} className="dl-btn">💾 Save</a>}
               </div>
