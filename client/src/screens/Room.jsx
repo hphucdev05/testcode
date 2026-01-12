@@ -7,6 +7,15 @@ import '../Room.css';
 // Xóa bỏ logic reload check cũ kỹ gây lỗi
 // let reloadHandled = false; 
 
+const formatBytes = (bytes, decimals = 2) => {
+  if (!+bytes) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+};
+
 const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
   const videoRef = useRef(null);
   useEffect(() => {
@@ -285,6 +294,12 @@ const Room = () => {
 
             const blob = new Blob(buffer.chunks);
             const url = URL.createObjectURL(blob);
+
+            // --- DEMO EVIDENCE FOR TEACHER ---
+            console.log(`%c [P2P Evidence] 💾 File Blob Created in RAM!`, 'color: #00ff00; font-weight: bold; font-size: 14px;');
+            console.log(`🔗 Blob URL: ${url}`);
+            console.log(`📦 Size in Memory: ${formatBytes(blob.size)}`);
+            // ---------------------------------
 
             setFiles(prev => prev.map(f => {
               if (f.id === msg.fileId) return { ...f, status: 'completed', url };
@@ -565,7 +580,7 @@ const Room = () => {
             <div className="panel-header">📂 P2P Files</div>
             <div className="file-list">{files.map(f => (
               <div key={f.id} className="file-item">
-                <div className="file-info"><span className="file-name">{f.name}</span><small className={f.status === 'cancelled' ? 'status-cancelled' : ''}>{f.status}</small></div>
+                <div className="file-info"><span className="file-name" title={f.name}>{f.name}</span> <span style={{ fontSize: '0.8rem', color: '#ccc' }}>({formatBytes(f.size)})</span> <small className={f.status === 'cancelled' ? 'status-cancelled' : ''}>{f.status}</small></div>
                 {f.status === 'pending' && <button className="btn-send" onClick={() => acceptFile(f.peerId, f.id, f.name, f.size)}>Accept</button>}
                 {f.status === 'completed' && f.url && <a href={f.url} download={f.name} className="dl-btn">💾 Save</a>}
               </div>
