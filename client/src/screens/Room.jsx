@@ -102,15 +102,12 @@ const Room = () => {
     }
     // 2. Đóng kết nối Peer
     Object.values(peersRef.current).forEach(p => p.peer.close());
-
-    // 3. Thông báo server
+    // 3. Thông báo server (Best effort)
     socket.emit("user:leaving", { room: currentRoom });
-    console.log("👋 Sending leave signal...");
 
-    // 4. Force Reload về trang chủ sau 500ms để đảm bảo Server nhận được tin
-    setTimeout(() => {
-      window.location.href = "/";
-    }, 500);
+    // 4. Force Reload về trang chủ (Đây là cách fix lỗi đăng nhập 2 lần)
+    // Nó sẽ xóa sạch memory leak và state cũ
+    window.location.href = "/";
   };
 
   // --- SCREEN SHARE ---
@@ -517,6 +514,9 @@ const Room = () => {
 
   useEffect(() => {
     const handleJoined = async ({ email, id }) => {
+      // 🔔 SYSTEM NOTIFICATION: JOIN
+      setMessages(prev => [...prev, { id: Date.now(), text: `${email} joined the room`, isSystem: true }]);
+
       const p = createPeer(id, email, myStreamRef.current, true);
       peersRef.current[id] = p;
       const offer = await p.getOffer();
@@ -530,17 +530,12 @@ const Room = () => {
     };
     const handleAccepted = async ({ from, ans }) => peersRef.current[from] && await peersRef.current[from].setLocalDescription(ans);
     const handleCandidate = async ({ candidate, from }) => { if (peersRef.current[from]) await peersRef.current[from].addIceCandidate(candidate); };
-    const handleLeft = ({ id, email }) => {
-      console.log(`🔻 User Left Event: ID=${id}, Email=${email}`);
 
-      // --- NOTIFICATION ---
-      const userEmail = email || "A user";
-      toast(`${userEmail} left the room`, {
-        icon: '🏃',
-        style: { borderRadius: '10px', background: '#333', color: '#fff' },
-        duration: 3000
-      });
-      // --------------------
+    const handleLeft = ({ id, email }) => {
+      // 🔔 SYSTEM NOTIFICATION: LEAVE
+      if (email) {
+        setMessages(prev => [...prev, { id: Date.now(), text: `${email} left the room`, isSystem: true }]);
+      }
 
       setRemoteStreams(prev => prev.filter(s => s.id !== id));
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
@@ -622,7 +617,21 @@ const Room = () => {
         <aside className="side-panel">
           <div className="chat-box">
             <div className="panel-header">💬 Chat</div>
-            <div className="chat-messages">{messages.map(m => (<div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>{!m.fromSelf && <small>{m.fromEmail}</small>}<p>{m.text}</p><div className="message-time">{m.time}</div></div>))}</div>
+            <div className="chat-messages">
+              {messages.map(m => (
+                m.isSystem ? (
+                  <div key={m.id} className="system-msg" style={{ textAlign: 'center', fontSize: '0.8rem', color: '#888', fontStyle: 'italic', margin: '5px 0' }}>
+                    {m.text}
+                  </div>
+                ) : (
+                  <div key={m.id} className={`chat-message ${m.fromSelf ? 'self' : 'other'}`}>
+                    {!m.fromSelf && <small>{m.fromEmail}</small>}
+                    <p>{m.text}</p>
+                    <div className="message-time">{m.time}</div>
+                  </div>
+                )
+              ))}
+            </div>
             <div className="chat-input-wrapper"><input value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Type..." /><button className="btn-send" onClick={handleSendMessage}>Send</button></div>
           </div>
           <div className="file-panel">

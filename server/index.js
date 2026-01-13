@@ -162,24 +162,6 @@ io.on("connection", (socket) => {
     io.to(to).emit("peer:candidate", { from: socket.id, candidate });
   });
 
-  // Handle explicit leave (Button Click)
-  socket.on("user:leaving", ({ room }) => {
-    const email = socketIdToEmailMap.get(socket.id);
-    console.log(`👋 User explicit leave: ${email} from ${room}`);
-
-    // Rời phòng Socket.io
-    socket.leave(room);
-
-    // Notify room
-    io.to(room).emit("user:left", {
-      id: socket.id,
-      email: email,
-    });
-
-    // Cleanup Maps
-    socketIdToRoomMap.delete(socket.id);
-  });
-
   // Handle disconnect
   socket.on("disconnect", () => {
     const email = socketIdToEmailMap.get(socket.id);
