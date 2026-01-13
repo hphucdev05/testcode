@@ -74,6 +74,15 @@ const Room = () => {
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
   const [pinnedId, setPinnedId] = useState('local');
+  const [toasts, setToasts] = useState([]);
+
+  const showToast = useCallback((msg) => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, msg }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  }, []);
 
   // File State
   const [files, setFiles] = useState([]);
@@ -514,8 +523,16 @@ const Room = () => {
 
   useEffect(() => {
     const handleJoined = async ({ email, id }) => {
-      // 🔔 SYSTEM NOTIFICATION: JOIN
-      setMessages(prev => [...prev, { id: Date.now(), text: `${email} joined the room`, isSystem: true }]);
+      // 🔔 SYSTEM NOTIFICATION: JOIN (DEDUPLICATED)
+      setMessages(prev => {
+        const lastMsg = prev[prev.length - 1];
+        // Nếu tin cuối cùng giống hệt và < 2s thì bỏ qua
+        if (lastMsg && lastMsg.text === `${email} joined the room` && (Date.now() - lastMsg.id < 2000)) {
+          return prev;
+        }
+        showToast(` 👋 ${email} joined the room`);
+        return [...prev, { id: Date.now(), text: `${email} joined the room`, isSystem: true }];
+      });
 
       const p = createPeer(id, email, myStreamRef.current, true);
       peersRef.current[id] = p;
@@ -532,9 +549,17 @@ const Room = () => {
     const handleCandidate = async ({ candidate, from }) => { if (peersRef.current[from]) await peersRef.current[from].addIceCandidate(candidate); };
 
     const handleLeft = ({ id, email }) => {
-      // 🔔 SYSTEM NOTIFICATION: LEAVE
+      // 🔔 SYSTEM NOTIFICATION: LEAVE (DEDUPLICATED)
       if (email) {
-        setMessages(prev => [...prev, { id: Date.now(), text: `${email} left the room`, isSystem: true }]);
+        setMessages(prev => {
+          const lastMsg = prev[prev.length - 1];
+          // Nếu tin cuối cùng giống hệt và < 2s thì bỏ qua
+          if (lastMsg && lastMsg.text === `${email} left the room` && (Date.now() - lastMsg.id < 2000)) {
+            return prev;
+          }
+          showToast(` 🚪 ${email} left the room`);
+          return [...prev, { id: Date.now(), text: `${email} left the room`, isSystem: true }];
+        });
       }
 
       setRemoteStreams(prev => prev.filter(s => s.id !== id));
@@ -646,6 +671,15 @@ const Room = () => {
           </div>
         </aside>
       </main>
+
+      {/* Toast Notifications Container */}
+      <div className="toast-container">
+        {toasts.map(t => (
+          <div key={t.id} className="toast-notification">
+            {t.msg}
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
