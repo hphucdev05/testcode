@@ -102,12 +102,15 @@ const Room = () => {
     }
     // 2. Đóng kết nối Peer
     Object.values(peersRef.current).forEach(p => p.peer.close());
-    // 3. Thông báo server (Best effort)
-    socket.emit("user:leaving", { room: currentRoom });
 
-    // 4. Force Reload về trang chủ (Đây là cách fix lỗi đăng nhập 2 lần)
-    // Nó sẽ xóa sạch memory leak và state cũ
-    window.location.href = "/";
+    // 3. Thông báo server
+    socket.emit("user:leaving", { room: currentRoom });
+    console.log("👋 Sending leave signal...");
+
+    // 4. Force Reload về trang chủ sau 500ms để đảm bảo Server nhận được tin
+    setTimeout(() => {
+      window.location.href = "/";
+    }, 500);
   };
 
   // --- SCREEN SHARE ---
@@ -527,7 +530,18 @@ const Room = () => {
     };
     const handleAccepted = async ({ from, ans }) => peersRef.current[from] && await peersRef.current[from].setLocalDescription(ans);
     const handleCandidate = async ({ candidate, from }) => { if (peersRef.current[from]) await peersRef.current[from].addIceCandidate(candidate); };
-    const handleLeft = ({ id }) => {
+    const handleLeft = ({ id, email }) => {
+      console.log(`🔻 User Left Event: ID=${id}, Email=${email}`);
+
+      // --- NOTIFICATION ---
+      const userEmail = email || "A user";
+      toast(`${userEmail} left the room`, {
+        icon: '🏃',
+        style: { borderRadius: '10px', background: '#333', color: '#fff' },
+        duration: 3000
+      });
+      // --------------------
+
       setRemoteStreams(prev => prev.filter(s => s.id !== id));
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
     };
