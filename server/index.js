@@ -158,43 +158,59 @@ io.on("connection", (socket) => {
     io.to(to).emit("peer:nego:final", { from: socket.id, ans });
   });
 
-  socket.on("peer:candidate", ({ to, candidate }) => {
-    io.to(to).emit("peer:candidate", { from: socket.id, candidate });
+  io.to(to).emit("peer:candidate", { from: socket.id, candidate });
+});
+
+// Handle explicit leave (Button Click)
+socket.on("user:leaving", ({ room }) => {
+  const email = socketIdToEmailMap.get(socket.id);
+  console.log(`👋 User explicit leave: ${email} from ${room}`);
+
+  // Rời phòng Socket.io
+  socket.leave(room);
+
+  // Notify room
+  io.to(room).emit("user:left", {
+    id: socket.id,
+    email: email,
   });
 
-  // Handle disconnect
-  socket.on("disconnect", () => {
-    const email = socketIdToEmailMap.get(socket.id);
-    const room = socketIdToRoomMap.get(socket.id);
+  // Cleanup Maps
+  socketIdToRoomMap.delete(socket.id);
+});
 
-    console.log(`❌ ${email} (${socket.id}) disconnected`);
+// Handle disconnect
+socket.on("disconnect", () => {
+  const email = socketIdToEmailMap.get(socket.id);
+  const room = socketIdToRoomMap.get(socket.id);
 
-    if (room) {
-      // Notify others in the room
-      const clientsInRoom = io.sockets.adapter.rooms.get(room);
-      const totalUsers = clientsInRoom ? clientsInRoom.size : 0;
+  console.log(`❌ ${email} (${socket.id}) disconnected`);
 
-      io.to(room).emit("user:left", {
-        id: socket.id,
-        email,
-        totalUsers
-      });
+  if (room) {
+    // Notify others in the room
+    const clientsInRoom = io.sockets.adapter.rooms.get(room);
+    const totalUsers = clientsInRoom ? clientsInRoom.size : 0;
 
-      // Broadcast updated user count
-      io.to(room).emit("room:update", {
-        totalUsers,
-        users: Array.from(clientsInRoom || []).map(id => ({
-          id,
-          email: socketIdToEmailMap.get(id)
-        }))
-      });
-    }
+    io.to(room).emit("user:left", {
+      id: socket.id,
+      email,
+      totalUsers
+    });
 
-    // Clean up all mappings
-    if (email) emailToSocketIdMap.delete(email);
-    socketIdToEmailMap.delete(socket.id);
-    socketIdToRoomMap.delete(socket.id);
-  });
+    // Broadcast updated user count
+    io.to(room).emit("room:update", {
+      totalUsers,
+      users: Array.from(clientsInRoom || []).map(id => ({
+        id,
+        email: socketIdToEmailMap.get(id)
+      }))
+    });
+  }
+
+  // Clean up all mappings
+  if (email) emailToSocketIdMap.delete(email);
+  socketIdToEmailMap.delete(socket.id);
+  socketIdToRoomMap.delete(socket.id);
 });
 
 console.log("🚀 Server running on port 8000");
