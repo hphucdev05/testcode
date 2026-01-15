@@ -300,14 +300,14 @@ const Room = () => {
         } else if (msg.type === 'file:cancel') {
           const transferKey = `${msg.fileId}-${id}`;
           activeTransfers.current.delete(transferKey);
-          if (progressTimers.current[msg.fileId]) {
-            clearInterval(progressTimers.current[msg.fileId]);
-            delete progressTimers.current[msg.fileId];
-          }
           setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'cancelled' } : f));
           setDownloadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
           setUploadProgress(prev => { let n = { ...prev }; delete n[msg.fileId]; return n; });
           delete inboundBuffersRef.current[msg.fileId];
+
+        } else if (msg.type === 'file:ack') {
+          // Người nhận báo đã nhận được chunk, sẵn sàng nhận tiếp
+          activeTransfers.current.add(`ready-${msg.fileId}-${id}`);
 
         } else if (msg.type === 'file:complete') {
           const buffer = inboundBuffersRef.current[msg.fileId];
@@ -316,45 +316,38 @@ const Room = () => {
           const blob = new Blob(buffer.chunks);
           const url = URL.createObjectURL(blob);
 
-          // --- DEMO EVIDENCE FOR TEACHER ---
-          console.log(`%c [P2P Evidence] 💾 File Blob Created in RAM!`, 'color: #00ff00; font-weight: bold; font-size: 14px;');
-          console.log(`🔗 Blob URL: ${url}`);
-          console.log(`📦 Size in Memory: ${formatBytes(blob.size)}`);
-          // ---------------------------------
-
-          setFiles(prev => prev.map(f => {
-            if (f.id === msg.fileId) return { ...f, status: 'completed', url };
-            return f;
-          }));
-
+          setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
           setDownloadProgress(prev => ({ ...prev, [msg.fileId]: 100 }));
 
           setTimeout(() => {
             setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
             delete inboundBuffersRef.current[msg.fileId];
-          }, 1500);
+          }, 2000);
 
-          if (progressTimers.current[msg.fileId]) {
-            clearInterval(progressTimers.current[msg.fileId]);
-            delete progressTimers.current[msg.fileId];
-          }
           activeTransfers.current.delete(`${msg.fileId}-${id}`);
+          console.log(`%c [Success] File ${buffer.name} received!`, 'color: #00ff00');
         }
       } catch (err) { console.error("File Msg Error", err); }
     } else {
       // BINARY CHUNK RECEIVE
-      const entry = Object.entries(inboundBuffersRef.current).find(([fid, val]) => val.status === 'receiving');
-      if (entry) {
-        const [fid, val] = entry;
+      const entries = Object.entries(inboundBuffersRef.current);
+      if (entries.length > 0) {
+        // Giả định nhận file theo thứ tự request (hoặc file đang ở trạng thái receiving)
+        const [fid, val] = entries.find(([_, v]) => v.status === 'receiving') || entries[0];
         val.chunks.push(e.data);
         val.receivedBytes += e.data.byteLength;
+
+        // Gửi ACK để người gửi biết là mình vẫn đang sống và nhận tốt
+        if (val.chunks.length % 10 === 0) {
+          peer.fileChannel.send(JSON.stringify({ type: 'file:ack', fileId: fid }));
+        }
       }
     }
   };
 
   const acceptFile = (peerId, fileId, name, size) => {
     const peer = peersRef.current[peerId];
-    if (peer) {
+    if (peer && peer.fileChannel.readyState === 'open') {
       const transferKey = `${fileId}-${peerId}`;
       activeTransfers.current.add(transferKey);
 
@@ -368,53 +361,52 @@ const Room = () => {
           clearInterval(interval);
           return;
         }
-
-        const p = Math.min(Math.round((buffer.receivedBytes / buffer.size) * 100), 100);
+        const p = Math.min(Math.round((buffer.receivedBytes / buffer.size) * 100), 99);
         setDownloadProgress(prev => ({ ...prev, [fileId]: p }));
-      }, 200);
+      }, 300);
       progressTimers.current[fileId] = interval;
     }
   };
 
   const sendFileInChunks = async (peer, file, fileId, toPeerId, transferKey) => {
-    const reader = file.stream().getReader();
-    let totalSent = 0;
+    const CHUNK_SIZE = 16384; // 16KB chuẩn WebRTC
+    let offset = 0;
 
     try {
-      while (true) {
-        if (!activeTransfers.current.has(transferKey)) {
-          reader.cancel();
-          break;
-        }
-
-        const { done, value } = await reader.read();
-        if (done) break;
-
+      while (offset < file.size) {
+        if (!activeTransfers.current.has(transferKey)) break;
         if (peer.fileChannel.readyState !== "open") break;
 
-        // 🟢 BACKPRESSURE: Đợi nếu buffer của DataChannel quá đầy (> 256KB)
-        while (peer.fileChannel.bufferedAmount > 262144) {
-          await new Promise(r => setTimeout(r, 10));
+        // Kiểm tra Buffer (Backpressure)
+        if (peer.fileChannel.bufferedAmount > 256000) {
+          await new Promise(r => setTimeout(r, 50));
+          continue;
         }
 
-        try {
-          peer.fileChannel.send(value);
-          totalSent += value.byteLength;
-          const p = Math.min(Math.round((totalSent / file.size) * 100), 99); // Giữ ở 99% cho đến khi xong hẳn
-          setUploadProgress(prev => ({ ...prev, [fileId]: p }));
-        } catch (err) { break; }
+        const chunk = file.slice(offset, offset + CHUNK_SIZE);
+        const buffer = await chunk.arrayBuffer();
+        peer.fileChannel.send(buffer);
+
+        offset += CHUNK_SIZE;
+        const p = Math.min(Math.round((offset / file.size) * 100), 99);
+        setUploadProgress(prev => ({ ...prev, [fileId]: p }));
+
+        // Tránh block main thread
+        if (offset % (CHUNK_SIZE * 20) === 0) {
+          await new Promise(r => setTimeout(r, 1));
+        }
       }
 
-      if (activeTransfers.current.has(transferKey)) {
+      if (activeTransfers.current.has(transferKey) && peer.fileChannel.readyState === "open") {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
 
         setTimeout(() => {
           setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
           activeTransfers.current.delete(transferKey);
-        }, 1500);
+        }, 2000);
       }
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error("Send Error:", err); }
   };
 
   const createPeer = useCallback((id, email, stream, initiator = false) => {
