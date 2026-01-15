@@ -299,9 +299,7 @@ const Room = () => {
 
         } else if (msg.type === 'file:cancel') {
           const transferKey = `${msg.fileId}-${id}`;
-          if (activeTransfers.current.has(transferKey)) {
-            activeTransfers.current.delete(transferKey);
-          }
+          activeTransfers.current.delete(transferKey);
           if (progressTimers.current[msg.fileId]) {
             clearInterval(progressTimers.current[msg.fileId]);
             delete progressTimers.current[msg.fileId];
@@ -315,40 +313,32 @@ const Room = () => {
           const buffer = inboundBuffersRef.current[msg.fileId];
           if (!buffer) return;
 
-          const finishDownload = () => {
-            if (buffer.status === 'cancelled') return;
+          const blob = new Blob(buffer.chunks);
+          const url = URL.createObjectURL(blob);
 
-            const blob = new Blob(buffer.chunks);
-            const url = URL.createObjectURL(blob);
+          // --- DEMO EVIDENCE FOR TEACHER ---
+          console.log(`%c [P2P Evidence] 💾 File Blob Created in RAM!`, 'color: #00ff00; font-weight: bold; font-size: 14px;');
+          console.log(`🔗 Blob URL: ${url}`);
+          console.log(`📦 Size in Memory: ${formatBytes(blob.size)}`);
+          // ---------------------------------
 
-            // --- DEMO EVIDENCE FOR TEACHER ---
-            console.log(`%c [P2P Evidence] 💾 File Blob Created in RAM!`, 'color: #00ff00; font-weight: bold; font-size: 14px;');
-            console.log(`🔗 Blob URL: ${url}`);
-            console.log(`📦 Size in Memory: ${formatBytes(blob.size)}`);
-            // ---------------------------------
+          setFiles(prev => prev.map(f => {
+            if (f.id === msg.fileId) return { ...f, status: 'completed', url };
+            return f;
+          }));
 
-            setFiles(prev => prev.map(f => {
-              if (f.id === msg.fileId) return { ...f, status: 'completed', url };
-              return f;
-            }));
+          setDownloadProgress(prev => ({ ...prev, [msg.fileId]: 100 }));
 
-            setTimeout(() => {
-              setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-              delete inboundBuffersRef.current[msg.fileId];
-            }, 500);
+          setTimeout(() => {
+            setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
+            delete inboundBuffersRef.current[msg.fileId];
+          }, 1500);
 
-            if (progressTimers.current[msg.fileId]) {
-              clearInterval(progressTimers.current[msg.fileId]);
-              delete progressTimers.current[msg.fileId];
-            }
-          };
-
-          const elapsed = Date.now() - buffer.startTime;
-          if (elapsed >= 6000) {
-            finishDownload();
-          } else {
-            setTimeout(finishDownload, 6000 - elapsed);
+          if (progressTimers.current[msg.fileId]) {
+            clearInterval(progressTimers.current[msg.fileId]);
+            delete progressTimers.current[msg.fileId];
           }
+          activeTransfers.current.delete(`${msg.fileId}-${id}`);
         }
       } catch (err) { console.error("File Msg Error", err); }
     } else {
@@ -357,7 +347,6 @@ const Room = () => {
       if (entry) {
         const [fid, val] = entry;
         val.chunks.push(e.data);
-        // Cập nhật số byte đã nhận để tính progress thật
         val.receivedBytes += e.data.byteLength;
       }
     }
@@ -369,43 +358,28 @@ const Room = () => {
       const transferKey = `${fileId}-${peerId}`;
       activeTransfers.current.add(transferKey);
 
-      const startTime = Date.now();
-      inboundBuffersRef.current[fileId] = { name, size, chunks: [], startTime, status: 'receiving', receivedBytes: 0 };
+      inboundBuffersRef.current[fileId] = { name, size, chunks: [], receivedBytes: 0, status: 'receiving' };
       peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
 
       const interval = setInterval(() => {
-        if (!activeTransfers.current.has(transferKey)) {
+        const buffer = inboundBuffersRef.current[fileId];
+        if (!buffer || !activeTransfers.current.has(transferKey)) {
           clearInterval(interval);
-          if (inboundBuffersRef.current[fileId]) inboundBuffersRef.current[fileId].status = 'cancelled';
           return;
         }
 
-        const buffer = inboundBuffersRef.current[fileId];
-        if (!buffer) return;
-
-        const elapsed = Date.now() - startTime;
-        // Logic mới: Progress là MIN của (Time Progress) và (Real Progress)
-        // Điều này đảm bảo:
-        // 1. File nhỏ: Vẫn chạy animation mượt trong ít nhất 6s (Time limit).
-        // 2. File lớn: Không bị kẹt ở 100% mà sẽ chạy theo tốc độ thật (Real limit).
-        const timeProgress = (elapsed / 6000) * 100;
-        const realProgress = (buffer.receivedBytes / buffer.size) * 100;
-
-        // Chỉ lấy làm tròn khi hiện thị
-        const p = Math.min(Math.round(timeProgress), Math.round(realProgress), 100);
-
+        const p = Math.min(Math.round((buffer.receivedBytes / buffer.size) * 100), 100);
         setDownloadProgress(prev => ({ ...prev, [fileId]: p }));
-
-        // KHÔNG còn tự clear interval sau 6s nữa mà đợi msg 'file:complete' clear
-      }, 100);
+      }, 200);
       progressTimers.current[fileId] = interval;
     }
   };
 
   const sendFileInChunks = async (peer, file, fileId, toPeerId, transferKey) => {
     const reader = file.stream().getReader();
-    const startTime = Date.now();
+    let totalSent = 0;
+
     try {
       while (true) {
         if (!activeTransfers.current.has(transferKey)) {
@@ -418,41 +392,27 @@ const Room = () => {
 
         if (peer.fileChannel.readyState !== "open") break;
 
-        // 🟢 FIX: Backpressure handling - Chờ nếu buffer đầy
-        while (peer.fileChannel.bufferedAmount > 65536) {
-          await new Promise(r => setTimeout(r, 5));
+        // 🟢 BACKPRESSURE: Đợi nếu buffer của DataChannel quá đầy (> 256KB)
+        while (peer.fileChannel.bufferedAmount > 262144) {
+          await new Promise(r => setTimeout(r, 10));
         }
 
-        try { peer.fileChannel.send(value); } catch (err) { break; }
-
-        if (activeTransfers.current.has(transferKey)) {
-          const p = Math.min(Math.round(((Date.now() - startTime) / 6000) * 100), 100);
+        try {
+          peer.fileChannel.send(value);
+          totalSent += value.byteLength;
+          const p = Math.min(Math.round((totalSent / file.size) * 100), 99); // Giữ ở 99% cho đến khi xong hẳn
           setUploadProgress(prev => ({ ...prev, [fileId]: p }));
-        }
-
-        if (file.size < 1000000) await new Promise(r => setTimeout(r, 60));
-      }
-
-      if (activeTransfers.current.has(transferKey)) {
-        while (true) {
-          if (!activeTransfers.current.has(transferKey)) break;
-          const elapsed = Date.now() - startTime;
-          if (elapsed >= 6000) break;
-          setUploadProgress(prev => ({ ...prev, [fileId]: Math.min(Math.round((elapsed / 6000) * 100), 100) }));
-          await new Promise(r => setTimeout(r, 100)); // Sleep
-        }
+        } catch (err) { break; }
       }
 
       if (activeTransfers.current.has(transferKey)) {
         setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
         peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
 
-        // CLEANUP Progress Bar for Sender
         setTimeout(() => {
           setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
-        }, 500);
-
-        activeTransfers.current.delete(transferKey);
+          activeTransfers.current.delete(transferKey);
+        }, 1500);
       }
     } catch (err) { console.error(err); }
   };
