@@ -313,19 +313,25 @@ const Room = () => {
           const buffer = inboundBuffersRef.current[msg.fileId];
           if (!buffer) return;
 
-          const blob = new Blob(buffer.chunks);
-          const url = URL.createObjectURL(blob);
-
-          setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
-          setDownloadProgress(prev => ({ ...prev, [msg.fileId]: 100 }));
+          // Đợi ít nhất 6s mới cho phép hoàn tất (đồng bộ với sender)
+          const elapsed = Date.now() - buffer.startTime;
+          const waitTime = Math.max(0, 6000 - elapsed);
 
           setTimeout(() => {
-            setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
-            delete inboundBuffersRef.current[msg.fileId];
-          }, 2000);
+            const blob = new Blob(buffer.chunks);
+            const url = URL.createObjectURL(blob);
 
-          activeTransfers.current.delete(`${msg.fileId}-${id}`);
-          console.log(`%c [Success] File ${buffer.name} received!`, 'color: #00ff00');
+            setFiles(prev => prev.map(f => f.id === msg.fileId ? { ...f, status: 'completed', url } : f));
+            setDownloadProgress(prev => ({ ...prev, [msg.fileId]: 100 }));
+
+            setTimeout(() => {
+              setDownloadProgress(prev => { const n = { ...prev }; delete n[msg.fileId]; return n; });
+              delete inboundBuffersRef.current[msg.fileId];
+            }, 2000);
+
+            activeTransfers.current.delete(`${msg.fileId}-${id}`);
+            console.log(`%c [Success] File ${buffer.name} received & Reconstructed!`, 'color: #00ff00');
+          }, waitTime);
         }
       } catch (err) { console.error("File Msg Error", err); }
     } else {
@@ -351,7 +357,8 @@ const Room = () => {
       const transferKey = `${fileId}-${peerId}`;
       activeTransfers.current.add(transferKey);
 
-      inboundBuffersRef.current[fileId] = { name, size, chunks: [], receivedBytes: 0, status: 'receiving' };
+      const startTime = Date.now();
+      inboundBuffersRef.current[fileId] = { name, size, chunks: [], receivedBytes: 0, status: 'receiving', startTime };
       peer.fileChannel.send(JSON.stringify({ type: "file:request", fileId }));
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'receiving' } : f));
 
@@ -361,9 +368,15 @@ const Room = () => {
           clearInterval(interval);
           return;
         }
-        const p = Math.min(Math.round((buffer.receivedBytes / buffer.size) * 100), 99);
+
+        const elapsed = Date.now() - startTime;
+        const timeProgress = (elapsed / 6000) * 100;
+        const realProgress = (buffer.receivedBytes / buffer.size) * 100;
+
+        // Progress = Min của thời gian (6s) và dung lượng thực
+        const p = Math.min(Math.round(timeProgress), Math.round(realProgress), 99);
         setDownloadProgress(prev => ({ ...prev, [fileId]: p }));
-      }, 300);
+      }, 200);
       progressTimers.current[fileId] = interval;
     }
   };
@@ -371,6 +384,7 @@ const Room = () => {
   const sendFileInChunks = async (peer, file, fileId, toPeerId, transferKey) => {
     const CHUNK_SIZE = 16384; // 16KB chuẩn WebRTC
     let offset = 0;
+    const startTime = Date.now();
 
     try {
       while (offset < file.size) {
@@ -388,7 +402,12 @@ const Room = () => {
         peer.fileChannel.send(buffer);
 
         offset += CHUNK_SIZE;
-        const p = Math.min(Math.round((offset / file.size) * 100), 99);
+
+        const elapsed = Date.now() - startTime;
+        const timeProgress = (elapsed / 6000) * 100;
+        const realProgress = (offset / file.size) * 100;
+
+        const p = Math.min(Math.round(timeProgress), Math.round(realProgress), 99);
         setUploadProgress(prev => ({ ...prev, [fileId]: p }));
 
         // Tránh block main thread
@@ -397,15 +416,27 @@ const Room = () => {
         }
       }
 
-      if (activeTransfers.current.has(transferKey) && peer.fileChannel.readyState === "open") {
-        setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
-        peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
+      const endElapsed = Date.now() - startTime;
+      const waitTime = Math.max(0, 6000 - endElapsed);
 
-        setTimeout(() => {
-          setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
-          activeTransfers.current.delete(transferKey);
-        }, 2000);
-      }
+      // Đợi cho đủ 6s mới báo xong
+      setTimeout(() => {
+        if (activeTransfers.current.has(transferKey) && peer.fileChannel.readyState === "open") {
+          setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
+          peer.fileChannel.send(JSON.stringify({ type: 'file:complete', fileId }));
+
+          // --- DEMO EVIDENCE: MEMORY CLEANUP ---
+          console.log(`%c [Memory Cleanup] 🧹 File reference '${file.name}' released from outbound buffer. Progress 100%`, 'color: #ff9900; font-weight: bold;');
+          // ------------------------------------
+
+          setTimeout(() => {
+            setUploadProgress(prev => { const n = { ...prev }; delete n[fileId]; return n; });
+            delete outboundFilesRef.current[fileId]; // Xóa hẳn tham chiếu file
+            activeTransfers.current.delete(transferKey);
+          }, 2000);
+        }
+      }, waitTime);
+
     } catch (err) { console.error("Send Error:", err); }
   };
 
