@@ -29,9 +29,11 @@ io.on("connection", (socket) => {
         // 1. Kiểm tra nếu phòng đang bị khoá
         if (lockedRooms.has(room)) {
             const hostId = roomToHostMap.get(room);
-            // Nếu người join không phải chủ phòng (hiếm khi xảy ra vì chủ phòng thường ở trong rồi)
             if (socket.id !== hostId) {
-                return socket.emit("room:error", { message: "This room is locked by the host." });
+                // Thông báo cho Host biết có người cố vào
+                io.to(hostId).emit("room:knock", { email, room });
+                // Từ chối người vào
+                return socket.emit("room:error", { message: `Room "${room}" is locked by the host.` });
             }
         }
 

@@ -647,6 +647,10 @@ const Room = () => {
       }, 1500);
     };
 
+    const handleKnock = ({ email }) => {
+      showToast(`🚪 ${email} tried to join but room is locked`);
+    };
+
     socket.on("user:joined", handleJoined);
     socket.on("incoming:call", handleInCall);
     socket.on("call:accepted", handleAccepted);
@@ -656,6 +660,7 @@ const Room = () => {
     socket.on("room:locked", handleLockedStatus);
     socket.on("user:kicked", handleKicked);
     socket.on("room:error", handleRoomError);
+    socket.on("room:knock", handleKnock);
 
     return () => {
       socket.off("user:joined", handleJoined);
@@ -667,6 +672,7 @@ const Room = () => {
       socket.off("room:locked", handleLockedStatus);
       socket.off("user:kicked", handleKicked);
       socket.off("room:error", handleRoomError);
+      socket.off("room:knock", handleKnock);
     };
   }, [socket, createPeer]);
 
