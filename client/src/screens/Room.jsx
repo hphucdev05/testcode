@@ -110,7 +110,6 @@ const Room = () => {
   const fileInputRef = useRef(null);
   const outboundFilesRef = useRef({});
   const inboundBuffersRef = useRef({});
-  const screenStreamRef = useRef(null); // Ref để quản lý luồng quay màn hình
   const activeTransfers = useRef(new Set());
   const progressTimers = useRef({});
 
@@ -136,7 +135,6 @@ const Room = () => {
     try {
       if (!isScreenSharing) {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        screenStreamRef.current = stream; // Lưu lại để stop sau này
         const videoTrack = stream.getVideoTracks()[0];
 
         Object.values(peersRef.current).forEach(p => {
@@ -153,20 +151,6 @@ const Room = () => {
   };
 
   const stopScreenShare = () => {
-    // 1. Dừng các track của màn hình (Để biến mất cái thanh thông báo ở dưới)
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(track => track.stop());
-      screenStreamRef.current = null;
-    }
-
-    // 2. Trả lại camera gốc cho các Peer
-    if (myStreamRef.current) {
-      const originalTrack = myStreamRef.current.getVideoTracks()[0];
-      Object.values(peersRef.current).forEach(p => {
-        const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-        if (sender) sender.replaceTrack(originalTrack);
-      });
-    }
     setIsScreenSharing(false);
   };
 
@@ -796,6 +780,18 @@ const Room = () => {
           </div>
         </aside>
       </main>
+
+      {/* Waiting Room Overlay */}
+      {isWaiting && (
+        <div className="waiting-overlay">
+          <div className="waiting-card">
+            <div className="spinner-large"></div>
+            <h2>Asking to join...</h2>
+            <p>Please wait, the host will let you in soon.</p>
+            <button className="btn-leave" onClick={() => window.location.href = "/"}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {/* Host Admission Panel */}
       {isHost && joinRequests.length > 0 && (
