@@ -107,6 +107,7 @@ const Room = () => {
 
   // Refs
   const peersRef = useRef({});
+  const approvalTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const outboundFilesRef = useRef({});
   const inboundBuffersRef = useRef({});
@@ -679,7 +680,8 @@ const Room = () => {
 
     const handleWaiting = () => {
       setIsWaitingApproval(true);
-      setTimeout(() => {
+      // Lưu timeout ID để có thể clear sau này
+      approvalTimeoutRef.current = setTimeout(() => {
         setIsWaitingApproval(false);
         showToast("❌ Request timed out");
         window.location.href = "/";
@@ -687,6 +689,11 @@ const Room = () => {
     };
 
     const handleApproved = () => {
+      // Clear timeout ngay lập tức!
+      if (approvalTimeoutRef.current) {
+        clearTimeout(approvalTimeoutRef.current);
+        approvalTimeoutRef.current = null;
+      }
       setIsWaitingApproval(false);
       showToast("✅ Host approved! Joining room...");
       socket.emit("room:join", { email: myEmail, room: currentRoom });
