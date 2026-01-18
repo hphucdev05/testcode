@@ -659,8 +659,10 @@ const Room = () => {
     };
 
     const handleKicked = () => {
-      alert("You have been removed from the room by the host.");
-      handleLeaveRoom();
+      showToast("❌ You have been removed from the room by the host");
+      setTimeout(() => {
+        window.location.href = "/";
+      }, 1500);
     };
 
     const handleRoomError = ({ message }) => {

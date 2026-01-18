@@ -97,7 +97,11 @@ io.on("connection", (socket) => {
 
     socket.on("user:kick", ({ to, room }) => {
         if (roomToHostMap.get(room) === socket.id) {
+            const kickedEmail = socketIdToEmailMap.get(to);
+            // Thông báo cho người bị kick
             io.to(to).emit("user:kicked", { room });
+            // Thông báo cho cả phòng để xóa video ngay lập tức
+            io.to(room).emit("user:left", { id: to, email: kickedEmail });
         }
     });
 
