@@ -199,6 +199,28 @@ const Room = () => {
     }
   };
 
+  const handleApprove = () => {
+    if (knockRequest) {
+      socket.emit("room:approve", {
+        requesterId: knockRequest.requesterId,
+        room: currentRoom
+      });
+      setKnockRequest(null);
+      showToast(`✅ Approved ${knockRequest.email}`);
+    }
+  };
+
+  const handleDeny = () => {
+    if (knockRequest) {
+      socket.emit("room:deny", {
+        requesterId: knockRequest.requesterId,
+        room: currentRoom
+      });
+      setKnockRequest(null);
+      showToast(`❌ Denied ${knockRequest.email}`);
+    }
+  };
+
   // --- RECORDING (UI + Mixed Audio) ---
   const startRecording = async () => {
     try {
@@ -649,8 +671,23 @@ const Room = () => {
       }, 1500);
     };
 
-    const handleKnock = ({ email }) => {
-      showToast(`🚪 ${email} tried to join but room is locked`);
+    const handleKnock = ({ email, requesterId }) => {
+      setKnockRequest({ email, requesterId });
+    };
+
+    const handleWaiting = () => {
+      setIsWaitingApproval(true);
+      setTimeout(() => {
+        setIsWaitingApproval(false);
+        showToast("❌ Request timed out");
+        window.location.href = "/";
+      }, 30000);
+    };
+
+    const handleApproved = () => {
+      setIsWaitingApproval(false);
+      showToast("✅ Host approved! Joining room...");
+      socket.emit("room:join", { email: myEmail, room: currentRoom });
     };
 
     socket.on("user:joined", handleJoined);
@@ -663,6 +700,8 @@ const Room = () => {
     socket.on("user:kicked", handleKicked);
     socket.on("room:error", handleRoomError);
     socket.on("room:knock", handleKnock);
+    socket.on("room:waiting", handleWaiting);
+    socket.on("room:approved", handleApproved);
 
     return () => {
       socket.off("user:joined", handleJoined);
@@ -675,6 +714,8 @@ const Room = () => {
       socket.off("user:kicked", handleKicked);
       socket.off("room:error", handleRoomError);
       socket.off("room:knock", handleKnock);
+      socket.off("room:waiting", handleWaiting);
+      socket.off("room:approved", handleApproved);
     };
   }, [socket, createPeer]);
 
@@ -797,6 +838,56 @@ const Room = () => {
           </div>
         ))}
       </div>
+
+      {/* Approval Modal cho Host */}
+      {knockRequest && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', zIndex: 10000
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            padding: '30px', borderRadius: '20px', textAlign: 'center',
+            maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+          }}>
+            <h2 style={{ marginBottom: '15px', fontSize: '1.5rem' }}>🚪 Join Request</h2>
+            <p style={{ fontSize: '1.1rem', marginBottom: '25px' }}>
+              <strong>{knockRequest.email}</strong> wants to join the room
+            </p>
+            <div style={{ display: 'flex', gap: '15px', justifyContent: 'center' }}>
+              <button onClick={handleApprove} style={{
+                background: '#28a745', color: 'white', border: 'none',
+                padding: '12px 30px', borderRadius: '10px', fontSize: '1rem',
+                fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.3s'
+              }}>
+                ✅ Allow
+              </button>
+              <button onClick={handleDeny} style={{
+                background: '#dc3545', color: 'white', border: 'none',
+                padding: '12px 30px', borderRadius: '10px', fontSize: '1rem',
+                fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.3s'
+              }}>
+                ❌ Deny
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Waiting Screen cho người xin vào */}
+      {isWaitingApproval && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 10000, flexDirection: 'column', gap: '20px'
+        }}>
+          <div style={{ fontSize: '4rem' }}>⏳</div>
+          <h2 style={{ fontSize: '2rem', color: 'white' }}>Waiting for Host Approval...</h2>
+          <p style={{ color: '#ccc', fontSize: '1.1rem' }}>The host will decide whether to let you in</p>
+        </div>
+      )}
     </div>
   );
 };
