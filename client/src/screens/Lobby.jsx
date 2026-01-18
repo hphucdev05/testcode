@@ -52,11 +52,21 @@ const Lobby = () => {
   };
 
   return (
-    <div className="lobby-page">
-      <div className="lobby-container">
+    <div className="lobby-container">
+      <div className="lobby-card">
         <h1>Video Connect</h1>
 
-        <form onSubmit={handleSubmit}>
+        <div className="getting-started">
+          <h3>Getting Started</h3>
+          <ol>
+            <li>Enter your workspace email</li>
+            <li>Define a room name/number</li>
+            <li>Connect with your peers instantly</li>
+            <li>Features: 4K Video, P2P Files, Screen Share</li>
+          </ol>
+        </div>
+
+        <form className="lobby-form" onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="email">Email Address</label>
             <input
@@ -89,25 +99,12 @@ const Lobby = () => {
 
           <button
             type="submit"
-            disabled={isJoining || !email || !room}
+            className="btn-join"
+            disabled={isJoining}
           >
-            {isJoining ? (
-              <>Joining... <div className="spinner"></div></>
-            ) : (
-              'Join Room'
-            )}
+            {isJoining ? 'Joining...' : 'Join Room'}
           </button>
         </form>
-
-        <div className="instructions">
-          <h3>Getting Started</h3>
-          <ol>
-            <li>Enter your workspace email</li>
-            <li>Define a room name/number</li>
-            <li>Connect with your peers instantly</li>
-            <li>Features: 4K Video, P2P Files, Screen Share</li>
-          </ol>
-        </div>
       </div>
     </div>
   );
