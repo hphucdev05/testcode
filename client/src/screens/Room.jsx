@@ -101,6 +101,8 @@ const Room = () => {
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
+  const [knockRequest, setKnockRequest] = useState(null); // {email, requesterId}
+  const [isWaitingApproval, setIsWaitingApproval] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
 
   // Refs

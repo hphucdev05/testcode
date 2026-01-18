@@ -30,10 +30,15 @@ io.on("connection", (socket) => {
         if (lockedRooms.has(room)) {
             const hostId = roomToHostMap.get(room);
             if (socket.id !== hostId) {
-                // Thông báo cho Host biết có người cố vào
-                io.to(hostId).emit("room:knock", { email, room });
-                // Từ chối người vào
-                return socket.emit("room:error", { message: `Room "${room}" is locked by the host.` });
+                // Gửi yêu cầu xin vào cho Host
+                io.to(hostId).emit("room:knock", {
+                    email,
+                    room,
+                    requesterId: socket.id
+                });
+                // Thông báo cho người xin vào rằng đang chờ
+                socket.emit("room:waiting", { message: "Waiting for host approval..." });
+                return; // Dừng lại, chờ Host phản hồi
             }
         }
 
@@ -86,6 +91,19 @@ io.on("connection", (socket) => {
     socket.on("user:kick", ({ to, room }) => {
         if (roomToHostMap.get(room) === socket.id) {
             io.to(to).emit("user:kicked", { room });
+        }
+    });
+
+    // Host phản hồi yêu cầu vào phòng
+    socket.on("room:approve", ({ requesterId, room }) => {
+        if (roomToHostMap.get(room) === socket.id) {
+            io.to(requesterId).emit("room:approved", { room });
+        }
+    });
+
+    socket.on("room:deny", ({ requesterId, room }) => {
+        if (roomToHostMap.get(room) === socket.id) {
+            io.to(requesterId).emit("room:error", { message: "Host denied your request to join." });
         }
     });
 
