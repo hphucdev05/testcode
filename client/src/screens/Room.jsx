@@ -705,6 +705,13 @@ const Room = () => {
       socket.emit("room:join", { email: myEmail, room: currentRoom });
     };
 
+    const handleSessionDuplicate = ({ message }) => {
+      showToast(`⚠️ ${message}`);
+      setTimeout(() => {
+        window.location.href = "/";
+      }, 2000);
+    };
+
     socket.on("user:joined", handleJoined);
     socket.on("incoming:call", handleInCall);
     socket.on("call:accepted", handleAccepted);
@@ -717,6 +724,7 @@ const Room = () => {
     socket.on("room:knock", handleKnock);
     socket.on("room:waiting", handleWaiting);
     socket.on("room:approved", handleApproved);
+    socket.on("session:duplicate", handleSessionDuplicate);
 
     return () => {
       socket.off("user:joined", handleJoined);
@@ -731,6 +739,7 @@ const Room = () => {
       socket.off("room:knock", handleKnock);
       socket.off("room:waiting", handleWaiting);
       socket.off("room:approved", handleApproved);
+      socket.off("session:duplicate", handleSessionDuplicate);
     };
   }, [socket, createPeer]);
 

@@ -49,11 +49,21 @@ io.on("connection", (socket) => {
             }
         }
 
-        // Clean ghost users
+        // Session Management: Kick old session if email already logged in
         const oldId = emailToSocketIdMap.get(email);
-        if (oldId) {
+        if (oldId && oldId !== socket.id) {
             const oldRoom = socketIdToRoomMap.get(oldId);
-            if (oldRoom) io.to(oldRoom).emit("user:left", { id: oldId, email });
+            // Thông báo cho session cũ
+            io.to(oldId).emit("session:duplicate", {
+                message: "Your account is being used on another device"
+            });
+            // Xóa khỏi phòng
+            if (oldRoom) {
+                io.to(oldRoom).emit("user:left", { id: oldId, email });
+            }
+            // Force disconnect session cũ
+            const oldSocket = io.sockets.sockets.get(oldId);
+            if (oldSocket) oldSocket.disconnect(true);
         }
 
         emailToSocketIdMap.set(email, socket.id);
