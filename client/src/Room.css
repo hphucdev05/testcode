@@ -5,6 +5,18 @@
     box-sizing: border-box;
 }
 
+@keyframes slideInRight {
+    from {
+        transform: translateX(400px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
 .room-container {
     display: flex;
     flex-direction: column;

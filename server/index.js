@@ -20,7 +20,8 @@ const emailToSocketIdMap = new Map();
 const socketIdToEmailMap = new Map();
 const socketIdToRoomMap = new Map();
 const roomToHostMap = new Map();
-const lockedRooms = new Set(); // Lưu danh sách phòng bị khoá
+const lockedRooms = new Set();
+const approvedUsers = new Map(); // {room: Set(socketIds)}
 
 io.on("connection", (socket) => {
     socket.on("room:join", (data) => {
@@ -29,16 +30,22 @@ io.on("connection", (socket) => {
         // 1. Kiểm tra nếu phòng đang bị khoá
         if (lockedRooms.has(room)) {
             const hostId = roomToHostMap.get(room);
-            if (socket.id !== hostId) {
-                // Gửi yêu cầu xin vào cho Host
+            const approved = approvedUsers.get(room);
+
+            // Kiểm tra nếu không phải host VÀ không có trong danh sách approved
+            if (socket.id !== hostId && (!approved || !approved.has(socket.id))) {
                 io.to(hostId).emit("room:knock", {
                     email,
                     room,
                     requesterId: socket.id
                 });
-                // Thông báo cho người xin vào rằng đang chờ
                 socket.emit("room:waiting", { message: "Waiting for host approval..." });
-                return; // Dừng lại, chờ Host phản hồi
+                return;
+            }
+
+            // Nếu đã được approve, xóa khỏi danh sách (dùng 1 lần)
+            if (approved && approved.has(socket.id)) {
+                approved.delete(socket.id);
             }
         }
 
@@ -97,6 +104,13 @@ io.on("connection", (socket) => {
     // Host phản hồi yêu cầu vào phòng
     socket.on("room:approve", ({ requesterId, room }) => {
         if (roomToHostMap.get(room) === socket.id) {
+            // Thêm vào whitelist
+            if (!approvedUsers.has(room)) {
+                approvedUsers.set(room, new Set());
+            }
+            approvedUsers.get(room).add(requesterId);
+
+            // Thông báo approved
             io.to(requesterId).emit("room:approved", { room });
         }
     });

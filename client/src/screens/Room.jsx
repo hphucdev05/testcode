@@ -839,33 +839,33 @@ const Room = () => {
         ))}
       </div>
 
-      {/* Approval Modal cho Host */}
+      {/* Approval Modal cho Host - Bottom Right */}
       {knockRequest && (
         <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center',
-          justifyContent: 'center', zIndex: 10000
+          position: 'fixed', bottom: '80px', right: '25px', zIndex: 10000,
+          animation: 'slideInRight 0.4s ease-out'
         }}>
           <div style={{
             background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-            padding: '30px', borderRadius: '20px', textAlign: 'center',
-            maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+            padding: '25px', borderRadius: '16px', textAlign: 'center',
+            minWidth: '320px', boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            border: '2px solid rgba(255,255,255,0.2)'
           }}>
-            <h2 style={{ marginBottom: '15px', fontSize: '1.5rem' }}>🚪 Join Request</h2>
-            <p style={{ fontSize: '1.1rem', marginBottom: '25px' }}>
-              <strong>{knockRequest.email}</strong> wants to join the room
+            <h3 style={{ marginBottom: '12px', fontSize: '1.2rem', color: 'white' }}>🚪 Join Request</h3>
+            <p style={{ fontSize: '0.95rem', marginBottom: '20px', color: 'rgba(255,255,255,0.9)' }}>
+              <strong>{knockRequest.email}</strong> wants to join
             </p>
-            <div style={{ display: 'flex', gap: '15px', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
               <button onClick={handleApprove} style={{
                 background: '#28a745', color: 'white', border: 'none',
-                padding: '12px 30px', borderRadius: '10px', fontSize: '1rem',
+                padding: '10px 24px', borderRadius: '8px', fontSize: '0.95rem',
                 fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.3s'
               }}>
                 ✅ Allow
               </button>
               <button onClick={handleDeny} style={{
                 background: '#dc3545', color: 'white', border: 'none',
-                padding: '12px 30px', borderRadius: '10px', fontSize: '1rem',
+                padding: '10px 24px', borderRadius: '8px', fontSize: '0.95rem',
                 fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.3s'
               }}>
                 ❌ Deny
