@@ -797,18 +797,6 @@ const Room = () => {
         </aside>
       </main>
 
-      {/* Waiting Room Overlay */}
-      {isWaiting && (
-        <div className="waiting-overlay">
-          <div className="waiting-card">
-            <div className="spinner-large"></div>
-            <h2>Asking to join...</h2>
-            <p>Please wait, the host will let you in soon.</p>
-            <button className="btn-leave" onClick={() => window.location.href = "/"}>Cancel</button>
-          </div>
-        </div>
-      )}
-
       {/* Host Admission Panel */}
       {isHost && joinRequests.length > 0 && (
         <div className="admission-panel">

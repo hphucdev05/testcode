@@ -1,49 +1,28 @@
-/* ============================================
-   LOBBY STYLING - MODERN SLATE THEME
-   ============================================ */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
-
+/* LOBBY STYLES */
 .lobby-page {
-    min-height: 100vh;
     display: flex;
-    align-items: center;
     justify-content: center;
-    background-color: #0f172a;
-    /* Midnight Slate */
-    font-family: 'Plus Jakarta Sans', sans-serif;
-    padding: 20px;
+    align-items: center;
+    min-height: 80vh;
 }
 
 .lobby-container {
-    background: #1e293b;
-    /* Deep Slate Card */
-    border: 1px solid #334155;
+    background: #1e1e26;
+    padding: 40px;
     border-radius: 20px;
-    padding: 50px;
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3);
     width: 100%;
     max-width: 450px;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-    animation: fadeIn 0.5s ease-out;
-}
-
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(10px);
-    }
-
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+    color: white;
 }
 
 .lobby-container h1 {
-    color: #f8fafc;
-    font-size: 2rem;
-    font-weight: 700;
-    margin-bottom: 30px;
     text-align: center;
+    margin-bottom: 30px;
+    font-size: 2rem;
+    background: linear-gradient(45deg, #007bff, #00d2ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 .form-group {
@@ -52,71 +31,53 @@
 
 .form-group label {
     display: block;
-    color: #94a3b8;
     margin-bottom: 8px;
     font-size: 0.9rem;
-    font-weight: 500;
+    color: #aaa;
 }
 
 .form-group input {
     width: 100%;
-    background: #0f172a;
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 14px 18px;
+    padding: 12px;
+    background: #2a2a35;
+    border: 1px solid #3a3a45;
+    border-radius: 8px;
     color: white;
     font-size: 1rem;
-    transition: all 0.2s ease;
-    outline: none;
 }
 
-.form-group input:focus {
-    border-color: #10b981;
-    /* Emerald Accent */
-    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
-}
-
-.lobby-container button {
+button {
     width: 100%;
-    background: #10b981;
-    /* Emerald Action Button */
+    padding: 12px;
+    background: #007bff;
     color: white;
     border: none;
-    border-radius: 12px;
-    padding: 16px;
-    font-size: 1rem;
-    font-weight: 700;
+    border-radius: 8px;
+    font-size: 1.1rem;
+    font-weight: bold;
     cursor: pointer;
     transition: all 0.2s;
-    margin-top: 10px;
 }
 
-.lobby-container button:hover:not(:disabled) {
-    background: #059669;
+button:hover {
+    background: #0056b3;
     transform: translateY(-2px);
 }
 
-.instructions {
-    margin-top: 30px;
-    background: rgba(15, 23, 42, 0.5);
-    border-radius: 12px;
-    padding: 20px;
-    color: #94a3b8;
-    font-size: 0.85rem;
-    border: 1px solid #334155;
+.spinner {
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    display: inline-block;
+    margin-left: 10px;
+    vertical-align: middle;
 }
 
-.instructions h3 {
-    color: #f8fafc;
-    margin-bottom: 10px;
-    font-size: 1rem;
-}
-
-.instructions ol {
-    margin: 0;
-    padding-left: 20px;
-}
-
-.instructions li {
-    margin-bottom: 8px;
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
