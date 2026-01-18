@@ -101,6 +101,8 @@ const Room = () => {
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
+  const [isWaiting, setIsWaiting] = useState(false);
+  const [joinRequests, setJoinRequests] = useState([]);
   const [mediaRecorder, setMediaRecorder] = useState(null);
 
   // Refs
@@ -108,6 +110,7 @@ const Room = () => {
   const fileInputRef = useRef(null);
   const outboundFilesRef = useRef({});
   const inboundBuffersRef = useRef({});
+  const screenStreamRef = useRef(null); // Ref để quản lý luồng quay màn hình
   const activeTransfers = useRef(new Set());
   const progressTimers = useRef({});
 
@@ -133,6 +136,7 @@ const Room = () => {
     try {
       if (!isScreenSharing) {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        screenStreamRef.current = stream; // Lưu lại để stop sau này
         const videoTrack = stream.getVideoTracks()[0];
 
         Object.values(peersRef.current).forEach(p => {
@@ -149,6 +153,20 @@ const Room = () => {
   };
 
   const stopScreenShare = () => {
+    // 1. Dừng các track của màn hình (Để biến mất cái thanh thông báo ở dưới)
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(track => track.stop());
+      screenStreamRef.current = null;
+    }
+
+    // 2. Trả lại camera gốc cho các Peer
+    if (myStreamRef.current) {
+      const originalTrack = myStreamRef.current.getVideoTracks()[0];
+      Object.values(peersRef.current).forEach(p => {
+        const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
+        if (sender) sender.replaceTrack(originalTrack);
+      });
+    }
     setIsScreenSharing(false);
   };
 
@@ -183,6 +201,11 @@ const Room = () => {
     if (isHost) {
       socket.emit("room:lock", { room: currentRoom, lock: !isLocked });
     }
+  };
+
+  const handleAdminDecision = (req, accept) => {
+    socket.emit("room:admin-decision", { to: req.id, room: currentRoom, accept, email: req.email });
+    setJoinRequests(prev => prev.filter(r => r.id !== req.id));
   };
 
   // --- RECORDING ---
@@ -621,11 +644,21 @@ const Room = () => {
     const handleRoomJoined = ({ isHost, isLocked }) => {
       setIsHost(isHost);
       setIsLocked(isLocked);
+      setIsWaiting(false); // Được phép vào phòng
     };
 
     const handleRoomLocked = ({ lock }) => {
       setIsLocked(lock);
       showToast(lock ? "🔒 Room locked by host" : "🔓 Room unlocked");
+    };
+
+    const handleRoomWaiting = () => {
+      setIsWaiting(true);
+    };
+
+    const handleRequestAsk = ({ email, id }) => {
+      setJoinRequests(prev => [...prev, { email, id }]);
+      showToast(`🔔 ${email} is asking to join`);
     };
 
     const handleRoomError = ({ message }) => {
@@ -642,6 +675,8 @@ const Room = () => {
     socket.on("user:kicked", handleKicked);
     socket.on("room:joined", handleRoomJoined);
     socket.on("room:locked", handleRoomLocked);
+    socket.on("room:waiting", handleRoomWaiting);
+    socket.on("room:request-ask", handleRequestAsk);
     socket.on("room:error", handleRoomError);
 
     return () => {
@@ -654,6 +689,8 @@ const Room = () => {
       socket.off("user:kicked", handleKicked);
       socket.off("room:joined", handleRoomJoined);
       socket.off("room:locked", handleRoomLocked);
+      socket.off("room:waiting", handleRoomWaiting);
+      socket.off("room:request-ask", handleRequestAsk);
       socket.off("room:error", handleRoomError);
     };
   }, [socket, createPeer]);
@@ -759,6 +796,34 @@ const Room = () => {
           </div>
         </aside>
       </main>
+
+      {/* Waiting Room Overlay */}
+      {isWaiting && (
+        <div className="waiting-overlay">
+          <div className="waiting-card">
+            <div className="spinner-large"></div>
+            <h2>Asking to join...</h2>
+            <p>Please wait, the host will let you in soon.</p>
+            <button className="btn-leave" onClick={() => window.location.href = "/"}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Host Admission Panel */}
+      {isHost && joinRequests.length > 0 && (
+        <div className="admission-panel">
+          <h3>Join Requests</h3>
+          {joinRequests.map(req => (
+            <div key={req.id} className="request-item">
+              <span>{req.email}</span>
+              <div className="request-actions">
+                <button className="btn-admit" onClick={() => handleAdminDecision(req, true)}>Admit</button>
+                <button className="btn-deny" onClick={() => handleAdminDecision(req, false)}>Deny</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Toast Notifications Container */}
       <div className="toast-container">

@@ -20,7 +20,7 @@ const emailToSocketIdMap = new Map();
 const socketIdToEmailMap = new Map();
 const socketIdToRoomMap = new Map();
 const roomToHostMap = new Map();
-const roomLockedMap = new Map(); // Lưu trạng thái khóa của phòng
+const roomLockedMap = new Map();
 
 io.on("connection", (socket) => {
   console.log(`✅ Connected: ${socket.id}`);
@@ -28,35 +28,46 @@ io.on("connection", (socket) => {
   socket.on("room:join", (data) => {
     const { email, room } = data;
 
-    // Kiểm tra xem phòng có đang bị khóa không
+    // --- LOGIC PHÒNG CHỜ (ASK TO JOIN) ---
     if (roomLockedMap.get(room)) {
-      socket.emit("room:error", { message: "This room is locked by the host." });
-      return;
+      const hostId = roomToHostMap.get(room);
+      if (hostId) {
+        // Báo cho người xin vào là phải chờ
+        socket.emit("room:waiting", { message: "Waiting for host's approval..." });
+        // Gửi yêu cầu tới chủ phòng
+        io.to(hostId).emit("room:request-ask", { email, id: socket.id });
+        return;
+      }
     }
 
-    // Clean ghost users
-    const oldId = emailToSocketIdMap.get(email);
-    if (oldId) {
-      const oldRoom = socketIdToRoomMap.get(oldId);
-      if (oldRoom) io.to(oldRoom).emit("user:left", { id: oldId, email });
-    }
+    // Nếu không khóa hoặc mình chính là người mở lại phòng
+    completeJoin(socket, email, room);
+  });
 
+  // Chủ phòng phản hồi yêu cầu
+  socket.on("room:admin-decision", ({ to, room, accept, email }) => {
+    if (roomToHostMap.get(room) === socket.id) {
+      if (accept) {
+        const targetSocket = io.sockets.sockets.get(to);
+        if (targetSocket) completeJoin(targetSocket, email, room);
+      } else {
+        io.to(to).emit("room:error", { message: "Host denied your join request." });
+      }
+    }
+  });
+
+  function completeJoin(socket, email, room) {
     emailToSocketIdMap.set(email, socket.id);
     socketIdToEmailMap.set(socket.id, email);
     socketIdToRoomMap.set(socket.id, room);
-
     socket.join(room);
 
-    // Host Logic: Người đầu tiên là Host
     const clientsInRoom = io.sockets.adapter.rooms.get(room);
     if (clientsInRoom.size === 1) {
       roomToHostMap.set(room, socket.id);
       socket.emit("host:status", { isHost: true });
-    } else {
-      socket.emit("host:status", { isHost: false });
     }
 
-    // Gửi danh sách user cũ cho người mới
     const existingUsers = [];
     clientsInRoom.forEach(id => {
       if (id !== socket.id) existingUsers.push({ id, email: socketIdToEmailMap.get(id) });
@@ -64,13 +75,17 @@ io.on("connection", (socket) => {
 
     socket.emit("room:joined", { email, room, existingUsers, isHost: roomToHostMap.get(room) === socket.id, isLocked: !!roomLockedMap.get(room) });
     socket.to(room).emit("user:joined", { email, id: socket.id });
-  });
+  }
 
   socket.on("room:lock", ({ room, lock }) => {
     if (roomToHostMap.get(room) === socket.id) {
       roomLockedMap.set(room, lock);
       io.to(room).emit("room:locked", { lock });
     }
+  });
+
+  socket.on("user:kick", ({ to, room }) => {
+    if (roomToHostMap.get(room) === socket.id) io.to(to).emit("user:kicked", { room });
   });
 
   socket.on("user:call", ({ to, offer }) => {
@@ -85,18 +100,10 @@ io.on("connection", (socket) => {
     io.to(to).emit("peer:candidate", { from: socket.id, candidate });
   });
 
-  // Kick logic
-  socket.on("user:kick", ({ to, room }) => {
-    if (roomToHostMap.get(room) === socket.id) {
-      io.to(to).emit("user:kicked", { room });
-    }
-  });
-
   const handleLeave = (socket, room) => {
     const email = socketIdToEmailMap.get(socket.id);
     socket.to(room).emit("user:left", { id: socket.id, email });
 
-    // Transfer Host if needed
     if (roomToHostMap.get(room) === socket.id) {
       const clients = Array.from(io.sockets.adapter.rooms.get(room) || []).filter(id => id !== socket.id);
       if (clients.length > 0) {
@@ -104,22 +111,20 @@ io.on("connection", (socket) => {
         io.to(clients[0]).emit("host:status", { isHost: true });
       } else {
         roomToHostMap.delete(room);
+        roomLockedMap.delete(room);
       }
     }
     socket.leave(room);
   };
 
   socket.on("user:leaving", ({ room }) => handleLeave(socket, room));
-
   socket.on("disconnecting", () => {
-    socket.rooms.forEach(room => {
-      if (room !== socket.id) handleLeave(socket, room);
-    });
+    socket.rooms.forEach(room => { if (room !== socket.id) handleLeave(socket, room); });
   });
 
   socket.on("disconnect", () => {
     const email = socketIdToEmailMap.get(socket.id);
-    emailToSocketIdMap.delete(email);
+    if (email) emailToSocketIdMap.delete(email);
     socketIdToEmailMap.delete(socket.id);
     socketIdToRoomMap.delete(socket.id);
   });
