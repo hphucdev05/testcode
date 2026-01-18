@@ -640,8 +640,11 @@ const Room = () => {
     };
 
     const handleRoomError = ({ message }) => {
-      alert(message);
-      window.location.href = "/";
+      // Ngăn render phòng bằng cách redirect ngay lập tức
+      showToast(`❌ ${message}`);
+      setTimeout(() => {
+        window.location.href = "/";
+      }, 1500);
     };
 
     socket.on("user:joined", handleJoined);
@@ -725,7 +728,11 @@ const Room = () => {
             <button className={`btn-control ${isRecording ? 'active' : ''}`} onClick={isRecording ? stopRecording : startRecording}>{isRecording ? 'Stop Record' : 'Record'}</button>
             <button className="btn-control" onClick={() => fileInputRef.current?.click()}>📁 File</button>
             <input ref={fileInputRef} type="file" onChange={handleFileSelect} style={{ display: 'none' }} />
-            <div className="status-progress-container">
+          </div>
+
+          {/* Progress Container - Separated to avoid layout shift */}
+          {(Object.keys(uploadProgress).length > 0 || Object.keys(downloadProgress).length > 0) && (
+            <div className="status-progress-container" style={{ padding: '10px 20px', background: 'rgba(0,0,0,0.3)', borderRadius: '10px' }}>
               {Object.entries(uploadProgress).map(([fId, p]) => (
                 <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="upload" status="uploading" onCancel={() => handleCancelFile(fId)} />
               ))}
@@ -733,7 +740,7 @@ const Room = () => {
                 <ProgressItem key={fId} name={files.find(f => f.id === fId)?.name || 'File'} progress={p} type="download" status="downloading" onCancel={() => handleCancelFile(fId)} />
               ))}
             </div>
-          </div>
+          )}
           <div className={`video-layout ${pinnedId ? 'spotlight' : 'grid'}`}>
             {pinnedId && pStream && <div className="pinned-video-container"><VideoPlayer stream={pStream.stream} isLocal={pStream.id === 'local'} email={pStream.email} id={pStream.id} onPin={handlePin} isPinned={true} isHost={isHost} onKick={handleKick} /></div>}
             <div className={`side-videos-grid ${!pinnedId ? 'grid-only' : ''}`}>
