@@ -660,6 +660,12 @@ const Room = () => {
     };
 
     const handleKicked = () => {
+      // Cleanup file buffers
+      outboundFilesRef.current = {};
+      inboundBuffersRef.current = {};
+      setUploadProgress({});
+      setDownloadProgress({});
+
       showToast("❌ You have been removed from the room by the host");
       setTimeout(() => {
         window.location.href = "/";
