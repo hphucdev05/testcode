@@ -3,7 +3,6 @@ const http = require("http");
 
 const PORT = process.env.PORT || 8000;
 
-// Tạo HTTP Server để Render có thể "kiểm tra sức khỏe" (Health Check)
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('WebRTC Signaling Server is Running\n');
@@ -11,203 +10,119 @@ const server = http.createServer((req, res) => {
 
 const io = new Server(server, {
   cors: {
-    origin: "*", // Cho phép mọi nguồn trong môi trường deploy
+    origin: "*",
     methods: ["GET", "POST"],
     credentials: true
   },
 });
 
-server.listen(PORT, () => {
-  console.log(`🚀 Production Server ready on port ${PORT}`);
-});
-
 const emailToSocketIdMap = new Map();
 const socketIdToEmailMap = new Map();
-const socketIdToRoomMap = new Map(); // Track which room each socket is in
+const socketIdToRoomMap = new Map();
+const roomToHostMap = new Map();
+const roomLockedMap = new Map(); // Lưu trạng thái khóa của phòng
 
 io.on("connection", (socket) => {
-  console.log(`✅ Socket Connected: ${socket.id}`);
+  console.log(`✅ Connected: ${socket.id}`);
 
   socket.on("room:join", (data) => {
     const { email, room } = data;
 
-    // Xử lý nạp dữ liệu mượt mà khi refresh (Tránh Ghost Users)
-    const oldSocketId = emailToSocketIdMap.get(email);
-    if (oldSocketId && oldSocketId !== socket.id) {
-      console.log(`🔄 Force cleaning ghost user: ${email} (${oldSocketId})`);
-      const oldRoom = socketIdToRoomMap.get(oldSocketId);
-      if (oldRoom) {
-        // Thông báo cho MỌI NGƯỜI trong phòng xóa User cũ này ngay lập tức
-        io.to(oldRoom).emit("user:left", { id: oldSocketId, email });
-      }
-      socketIdToEmailMap.delete(oldSocketId);
-      socketIdToRoomMap.delete(oldSocketId);
+    // Kiểm tra xem phòng có đang bị khóa không
+    if (roomLockedMap.get(room)) {
+      socket.emit("room:error", { message: "This room is locked by the host." });
+      return;
     }
 
-    // Cập nhật mapping mới
+    // Clean ghost users
+    const oldId = emailToSocketIdMap.get(email);
+    if (oldId) {
+      const oldRoom = socketIdToRoomMap.get(oldId);
+      if (oldRoom) io.to(oldRoom).emit("user:left", { id: oldId, email });
+    }
+
     emailToSocketIdMap.set(email, socket.id);
     socketIdToEmailMap.set(socket.id, email);
     socketIdToRoomMap.set(socket.id, room);
 
-    // Check if socket is already in another room
-    const currentRoom = socketIdToRoomMap.get(socket.id);
-    if (currentRoom && currentRoom !== room) {
-      console.log(`📤 Socket ${socket.id} leaving old room: ${currentRoom}`);
-      socket.leave(currentRoom);
-
-      // Notify old room
-      io.to(currentRoom).emit("user:left", {
-        id: socket.id,
-        email: socketIdToEmailMap.get(socket.id)
-      });
-    }
-
-    // Update mappings
-    emailToSocketIdMap.set(email, socket.id);
-    socketIdToEmailMap.set(socket.id, email);
-    socketIdToRoomMap.set(socket.id, room);
-
-    // Join room
     socket.join(room);
 
-    // Get existing users in room (excluding self)
+    // Host Logic: Người đầu tiên là Host
     const clientsInRoom = io.sockets.adapter.rooms.get(room);
-    const existingUsers = [];
-
-    if (clientsInRoom) {
-      clientsInRoom.forEach(id => {
-        if (id !== socket.id) {
-          existingUsers.push({
-            id: id,
-            email: socketIdToEmailMap.get(id)
-          });
-        }
-      });
+    if (clientsInRoom.size === 1) {
+      roomToHostMap.set(room, socket.id);
+      socket.emit("host:status", { isHost: true });
+    } else {
+      socket.emit("host:status", { isHost: false });
     }
 
-    console.log(`👤 ${email} joined room ${room}. Existing: ${existingUsers.length}`);
-
-    // Send existing users to new joiner
-    socket.emit("room:joined", { email, room, existingUsers });
-
-    // Notify others about new joiner (with user count update)
-    const totalUsers = clientsInRoom ? clientsInRoom.size : 1;
-    socket.to(room).emit("user:joined", {
-      email,
-      id: socket.id,
-      totalUsers
+    // Gửi danh sách user cũ cho người mới
+    const existingUsers = [];
+    clientsInRoom.forEach(id => {
+      if (id !== socket.id) existingUsers.push({ id, email: socketIdToEmailMap.get(id) });
     });
 
-    // Broadcast updated user count to everyone including self
-    io.to(room).emit("room:update", {
-      totalUsers,
-      users: Array.from(clientsInRoom || []).map(id => ({
-        id,
-        email: socketIdToEmailMap.get(id)
-      }))
-    });
+    socket.emit("room:joined", { email, room, existingUsers, isHost: roomToHostMap.get(room) === socket.id, isLocked: !!roomLockedMap.get(room) });
+    socket.to(room).emit("user:joined", { email, id: socket.id });
   });
 
-  // Handle explicit leave
-  socket.on("user:leaving", ({ room }) => {
-    if (!room) return;
-
-    const email = socketIdToEmailMap.get(socket.id);
-    console.log(`👋 ${email} leaving room ${room}`);
-
-    socket.leave(room);
-
-    // Notify others
-    const clientsInRoom = io.sockets.adapter.rooms.get(room);
-    const totalUsers = clientsInRoom ? clientsInRoom.size : 0;
-
-    io.to(room).emit("user:left", {
-      id: socket.id,
-      email,
-      totalUsers
-    });
-
-    // Broadcast updated user count
-    io.to(room).emit("room:update", {
-      totalUsers,
-      users: Array.from(clientsInRoom || []).map(id => ({
-        id,
-        email: socketIdToEmailMap.get(id)
-      }))
-    });
-
-    // Clean up mappings
-    socketIdToRoomMap.delete(socket.id);
+  socket.on("room:lock", ({ room, lock }) => {
+    if (roomToHostMap.get(room) === socket.id) {
+      roomLockedMap.set(room, lock);
+      io.to(room).emit("room:locked", { lock });
+    }
   });
 
-  // Signaling events
   socket.on("user:call", ({ to, offer }) => {
-    const fromEmail = socketIdToEmailMap.get(socket.id);
-    io.to(to).emit("incoming:call", { from: socket.id, offer, fromEmail });
+    io.to(to).emit("incoming:call", { from: socket.id, offer, fromEmail: socketIdToEmailMap.get(socket.id) });
   });
 
   socket.on("call:accepted", ({ to, ans }) => {
     io.to(to).emit("call:accepted", { from: socket.id, ans });
   });
 
-  socket.on("peer:nego:needed", ({ to, offer }) => {
-    io.to(to).emit("peer:nego:needed", { from: socket.id, offer });
-  });
-
-  socket.on("peer:nego:done", ({ to, ans }) => {
-    io.to(to).emit("peer:nego:final", { from: socket.id, ans });
-  });
-
   socket.on("peer:candidate", ({ to, candidate }) => {
     io.to(to).emit("peer:candidate", { from: socket.id, candidate });
   });
 
-  // Handle disconnect
+  // Kick logic
+  socket.on("user:kick", ({ to, room }) => {
+    if (roomToHostMap.get(room) === socket.id) {
+      io.to(to).emit("user:kicked", { room });
+    }
+  });
+
+  const handleLeave = (socket, room) => {
+    const email = socketIdToEmailMap.get(socket.id);
+    socket.to(room).emit("user:left", { id: socket.id, email });
+
+    // Transfer Host if needed
+    if (roomToHostMap.get(room) === socket.id) {
+      const clients = Array.from(io.sockets.adapter.rooms.get(room) || []).filter(id => id !== socket.id);
+      if (clients.length > 0) {
+        roomToHostMap.set(room, clients[0]);
+        io.to(clients[0]).emit("host:status", { isHost: true });
+      } else {
+        roomToHostMap.delete(room);
+      }
+    }
+    socket.leave(room);
+  };
+
+  socket.on("user:leaving", ({ room }) => handleLeave(socket, room));
+
+  socket.on("disconnecting", () => {
+    socket.rooms.forEach(room => {
+      if (room !== socket.id) handleLeave(socket, room);
+    });
+  });
+
   socket.on("disconnect", () => {
     const email = socketIdToEmailMap.get(socket.id);
-    const room = socketIdToRoomMap.get(socket.id);
-
-    console.log(`❌ ${email} (${socket.id}) disconnected`);
-
-    if (room) {
-      // Notify others in the room
-      const clientsInRoom = io.sockets.adapter.rooms.get(room);
-      const totalUsers = clientsInRoom ? clientsInRoom.size : 0;
-
-      io.to(room).emit("user:left", {
-        id: socket.id,
-        email,
-        totalUsers
-      });
-
-      // Broadcast updated user count
-      io.to(room).emit("room:update", {
-        totalUsers,
-        users: Array.from(clientsInRoom || []).map(id => ({
-          id,
-          email: socketIdToEmailMap.get(id)
-        }))
-      });
-    }
-
-    // Clean up all mappings
-    if (email) emailToSocketIdMap.delete(email);
+    emailToSocketIdMap.delete(email);
     socketIdToEmailMap.delete(socket.id);
     socketIdToRoomMap.delete(socket.id);
   });
 });
 
-console.log("🚀 Server running on port 8000");
-console.log("📡 Accessible at:");
-console.log("   - http://localhost:8000");
-
-// Get local IP
-const os = require('os');
-const networkInterfaces = os.networkInterfaces();
-Object.keys(networkInterfaces).forEach(interfaceName => {
-  networkInterfaces[interfaceName].forEach(iface => {
-    if (iface.family === 'IPv4' && !iface.internal) {
-      console.log(`   - http://${iface.address}:8000`);
-    }
-  });
-});
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

@@ -16,7 +16,7 @@ const formatBytes = (bytes, decimals = 2) => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 };
 
-const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
+const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned, isHost, onKick }) => {
   const videoRef = useRef(null);
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -32,7 +32,12 @@ const VideoPlayer = memo(({ stream, isLocal, email, id, onPin, isPinned }) => {
       ) : (
         <div className="camera-off"><span>📷</span><p>{isLocal ? "My Camera" : "Connecting..."}</p></div>
       )}
-      <div className="user-tag">{isPinned && "📌 "}{email}</div>
+      <div className="user-tag">
+        {isPinned && "📌 "}{email}
+        {!isLocal && isHost && (
+          <button className="btn-kick-small" onClick={(e) => { e.stopPropagation(); onKick(id); }} title="Kick User">🚪</button>
+        )}
+      </div>
     </div>
   );
 });
@@ -92,6 +97,10 @@ const Room = () => {
   // Feature State
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isHost, setIsHost] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
 
   // Refs
@@ -140,37 +149,87 @@ const Room = () => {
   };
 
   const stopScreenShare = () => {
-    if (myStreamRef.current) {
-      const originalTrack = myStreamRef.current.getVideoTracks()[0];
-      Object.values(peersRef.current).forEach(p => {
-        const sender = p.peer.getSenders().find(s => s.track.kind === 'video');
-        if (sender) sender.replaceTrack(originalTrack);
-      });
-    }
     setIsScreenSharing(false);
   };
 
-  // --- RECORDING ---
-  const startRecording = () => {
-    const chunks = [];
-    const tracks = [...(myStreamRef.current?.getTracks() || []), ...remoteStreams.flatMap(s => s.stream.getTracks())];
-    if (tracks.length === 0) return;
-    const stream = new MediaStream(tracks);
-    const recorder = new MediaRecorder(stream);
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `recording-${Date.now()}.webm`;
-      a.click();
-    };
-    recorder.start();
-    setMediaRecorder(recorder);
-    setIsRecording(true);
+  // --- AUDIO/VIDEO TOGGLE ---
+  const toggleAudio = () => {
+    if (myStreamRef.current) {
+      const audioTrack = myStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMuted(!audioTrack.enabled);
+      }
+    }
   };
-  const stopRecording = () => { mediaRecorder?.stop(); setIsRecording(false); };
+
+  const toggleVideo = () => {
+    if (myStreamRef.current) {
+      const videoTrack = myStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOff(!videoTrack.enabled);
+      }
+    }
+  };
+
+  const handleKick = (targetId) => {
+    if (isHost) {
+      socket.emit("user:kick", { to: targetId, room: currentRoom });
+    }
+  };
+
+  const toggleLock = () => {
+    if (isHost) {
+      socket.emit("room:lock", { room: currentRoom, lock: !isLocked });
+    }
+  };
+
+  // --- RECORDING ---
+  const startRecording = async () => {
+    try {
+      // 🎥 Ghi lại toàn bộ màn hình/tab họp (Bao gồm layout và âm thanh)
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true // Tích vào 'Share system audio' khi chọn tab để ghi âm thanh cuộc họp
+      });
+
+      const chunks = [];
+      const recorder = new MediaRecorder(screenStream);
+
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = () => {
+        // Stop all tracks of screenStream
+        screenStream.getTracks().forEach(t => t.stop());
+
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `meeting-record-${Date.now()}.webm`;
+        a.click();
+        showToast("💾 Meeting recording saved!");
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+      showToast("⏺️ Recording started...");
+
+      // Tự động dừng nếu người dùng bấm 'Stop Sharing' của trình duyệt
+      screenStream.getVideoTracks()[0].onended = () => {
+        if (recorder.state !== 'inactive') recorder.stop();
+        setIsRecording(false);
+      };
+
+    } catch (err) { console.error("Recording error:", err); }
+  };
+  const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    setIsRecording(false);
+  };
 
   // --- CHAT LOGIC ---
   const handleSendMessage = () => {
@@ -549,17 +608,53 @@ const Room = () => {
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
     };
 
+    const handleHostStatus = ({ isHost }) => {
+      setIsHost(isHost);
+      if (isHost) showToast("⭐ You are now the Room Host!");
+    };
+
+    const handleKicked = () => {
+      alert("You have been removed from the room by the host.");
+      handleLeaveRoom();
+    };
+
+    const handleRoomJoined = ({ isHost, isLocked }) => {
+      setIsHost(isHost);
+      setIsLocked(isLocked);
+    };
+
+    const handleRoomLocked = ({ lock }) => {
+      setIsLocked(lock);
+      showToast(lock ? "🔒 Room locked by host" : "🔓 Room unlocked");
+    };
+
+    const handleRoomError = ({ message }) => {
+      alert(message);
+      window.location.href = "/";
+    };
+
     socket.on("user:joined", handleJoined);
     socket.on("incoming:call", handleInCall);
     socket.on("call:accepted", handleAccepted);
     socket.on("peer:candidate", handleCandidate);
     socket.on("user:left", handleLeft);
+    socket.on("host:status", handleHostStatus);
+    socket.on("user:kicked", handleKicked);
+    socket.on("room:joined", handleRoomJoined);
+    socket.on("room:locked", handleRoomLocked);
+    socket.on("room:error", handleRoomError);
+
     return () => {
       socket.off("user:joined", handleJoined);
       socket.off("incoming:call", handleInCall);
       socket.off("call:accepted", handleAccepted);
       socket.off("peer:candidate", handleCandidate);
       socket.off("user:left", handleLeft);
+      socket.off("host:status", handleHostStatus);
+      socket.off("user:kicked", handleKicked);
+      socket.off("room:joined", handleRoomJoined);
+      socket.off("room:locked", handleRoomLocked);
+      socket.off("room:error", handleRoomError);
     };
   }, [socket, createPeer]);
 
@@ -590,18 +685,28 @@ const Room = () => {
   return (
     <div className="room-container">
       <header className="room-header" style={{ padding: '10px' }}>
-        <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Room: {currentRoom}</h1>
+        <h1 style={{ fontSize: '1.2rem', margin: 0 }}>Room: {currentRoom} {isHost && <span style={{ fontSize: '0.8rem', color: '#ffd700', marginLeft: '5px' }}>⭐ Host</span>}</h1>
         {/* Responsive Header: Dùng flex-wrap để xuống dòng trên mobile */}
         <div className="connection-status" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center', gap: '8px' }}>
           <span>👤 {myEmail}</span>
           <span>|</span>
           <span>👥 {remoteStreams.length + 1}</span>
+          {isHost && (
+            <button
+              className={`btn-leave ${isLocked ? 'locked' : ''}`}
+              onClick={toggleLock}
+              style={{ backgroundColor: isLocked ? '#6c757d' : '#28a745', color: 'white', marginLeft: '10px', borderRadius: '20px', padding: '8px 16px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+              {isLocked ? '🔒 Locked' : '🔓 Open'}
+            </button>
+          )}
           <button className="btn-leave" onClick={handleLeaveRoom} style={leaveBtnStyle}>📞 Leave</button>
         </div>
       </header>
       <main className="main-content">
         <div className="video-section">
           <div className="controls-bar">
+            <button className={`btn-control ${isMuted ? 'toggle-off' : ''}`} onClick={toggleAudio}>{isMuted ? '🔇 Unmute' : '🎙️ Mute'}</button>
+            <button className={`btn-control ${isVideoOff ? 'toggle-off' : ''}`} onClick={toggleVideo}>{isVideoOff ? '📷 Camera On' : '📹 Camera Off'}</button>
             <button className={`btn-control ${isScreenSharing ? 'active' : ''}`} onClick={handleScreenShare}>{isScreenSharing ? 'Stop Screen' : 'Screen'}</button>
             <button className={`btn-control ${isRecording ? 'active' : ''}`} onClick={isRecording ? stopRecording : startRecording}>{isRecording ? 'Stop Record' : 'Record'}</button>
             <button className="btn-control" onClick={() => fileInputRef.current?.click()}>📁 File</button>
@@ -616,9 +721,9 @@ const Room = () => {
             </div>
           </div>
           <div className={`video-layout ${pinnedId ? 'spotlight' : 'grid'}`}>
-            {pinnedId && pStream && <div className="pinned-video-container"><VideoPlayer stream={pStream.stream} isLocal={pStream.id === 'local'} email={pStream.email} id={pStream.id} onPin={handlePin} isPinned={true} /></div>}
+            {pinnedId && pStream && <div className="pinned-video-container"><VideoPlayer stream={pStream.stream} isLocal={pStream.id === 'local'} email={pStream.email} id={pStream.id} onPin={handlePin} isPinned={true} isHost={isHost} onKick={handleKick} /></div>}
             <div className={`side-videos-grid ${!pinnedId ? 'grid-only' : ''}`}>
-              {otherStreams.map(s => <VideoPlayer key={s.id} stream={s.stream} isLocal={s.id === 'local'} email={s.email} id={s.id} onPin={handlePin} isPinned={false} />)}
+              {otherStreams.map(s => <VideoPlayer key={s.id} stream={s.stream} isLocal={s.id === 'local'} email={s.email} id={s.id} onPin={handlePin} isPinned={false} isHost={isHost} onKick={handleKick} />)}
             </div>
           </div>
         </div>

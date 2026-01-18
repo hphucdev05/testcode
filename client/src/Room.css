@@ -499,3 +499,25 @@ body {
   from { transform: translateX(-100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 } 
+
+.btn-kick-small {
+  background: #dc3545;
+  border: none;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  margin-left: 8px;
+  transition: all 0.2s;
+}
+
+.btn-kick-small:hover {
+  background: #c82333;
+  transform: scale(1.1);
+}
+
+.btn-control.toggle-off {
+  background: #dc3545 !important;
+  color: white !important;
+} 
