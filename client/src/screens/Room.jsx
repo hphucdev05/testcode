@@ -149,6 +149,17 @@ const Room = () => {
   };
 
   const stopScreenShare = () => {
+    if (myStreamRef.current) {
+      const originalVideoTrack = myStreamRef.current.getVideoTracks()[0];
+
+      // Khôi phục lại camera cho tất cả peers
+      Object.values(peersRef.current).forEach(p => {
+        const sender = p.peer.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender && originalVideoTrack) {
+          sender.replaceTrack(originalVideoTrack);
+        }
+      });
+    }
     setIsScreenSharing(false);
   };
 
