@@ -101,8 +101,6 @@ const Room = () => {
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
-  const [isWaiting, setIsWaiting] = useState(false);
-  const [joinRequests, setJoinRequests] = useState([]);
   const [mediaRecorder, setMediaRecorder] = useState(null);
 
   // Refs
@@ -183,60 +181,59 @@ const Room = () => {
 
   const toggleLock = () => {
     if (isHost) {
-      socket.emit("room:lock", { room: currentRoom, lock: !isLocked });
+      if (isLocked) socket.emit("room:unlock", { room: currentRoom });
+      else socket.emit("room:lock", { room: currentRoom });
     }
   };
 
-  const handleAdminDecision = (req, accept) => {
-    socket.emit("room:admin-decision", { to: req.id, room: currentRoom, accept, email: req.email });
-    setJoinRequests(prev => prev.filter(r => r.id !== req.id));
-  };
-
-  // --- RECORDING ---
+  // --- RECORDING (UI + Mixed Audio) ---
   const startRecording = async () => {
     try {
-      // 🎥 Ghi lại toàn bộ màn hình/tab họp (Bao gồm layout và âm thanh)
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true // Tích vào 'Share system audio' khi chọn tab để ghi âm thanh cuộc họp
+      // 1. Quay màn hình giao diện họp
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+
+      // 2. Mix âm thanh (Local + Remote)
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const dest = audioCtx.createMediaStreamDestination();
+
+      // Audio từ mình
+      if (myStreamRef.current && myStreamRef.current.getAudioTracks().length > 0) {
+        audioCtx.createMediaStreamSource(new MediaStream([myStreamRef.current.getAudioTracks()[0]])).connect(dest);
+      }
+
+      // Audio từ tất cả người khác
+      remoteStreams.forEach(s => {
+        if (s.stream.getAudioTracks().length > 0) {
+          audioCtx.createMediaStreamSource(new MediaStream([s.stream.getAudioTracks()[0]])).connect(dest);
+        }
       });
 
+      // Kết hợp Video màn hình + Audio đã Mix
+      const mixedStream = new MediaStream([
+        displayStream.getVideoTracks()[0],
+        ...dest.stream.getAudioTracks()
+      ]);
+
       const chunks = [];
-      const recorder = new MediaRecorder(screenStream);
+      const recorder = new MediaRecorder(mixedStream, { mimeType: 'video/webm' });
 
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
       recorder.onstop = () => {
-        // Stop all tracks of screenStream
-        screenStream.getTracks().forEach(t => t.stop());
-
+        displayStream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunks, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = `meeting-record-${Date.now()}.webm`;
         a.click();
-        showToast("💾 Meeting recording saved!");
       };
 
       recorder.start();
       setMediaRecorder(recorder);
       setIsRecording(true);
-      showToast("⏺️ Recording started...");
-
-      // Tự động dừng nếu người dùng bấm 'Stop Sharing' của trình duyệt
-      screenStream.getVideoTracks()[0].onended = () => {
-        if (recorder.state !== 'inactive') recorder.stop();
-        setIsRecording(false);
-      };
-
     } catch (err) { console.error("Recording error:", err); }
   };
-  const stopRecording = () => {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-    }
-    setIsRecording(false);
-  };
+  const stopRecording = () => { mediaRecorder?.stop(); setIsRecording(false); };
 
   // --- CHAT LOGIC ---
   const handleSendMessage = () => {
@@ -615,34 +612,20 @@ const Room = () => {
       if (peersRef.current[id]) { peersRef.current[id].peer.close(); delete peersRef.current[id]; }
     };
 
-    const handleHostStatus = ({ isHost }) => {
+    const handleHostStatus = ({ isHost, isLocked }) => {
       setIsHost(isHost);
+      if (isLocked !== undefined) setIsLocked(isLocked);
       if (isHost) showToast("⭐ You are now the Room Host!");
+    };
+
+    const handleLockedStatus = ({ status }) => {
+      setIsLocked(status);
+      showToast(status ? "🔒 Room restricted by host" : "🔓 Room is now open");
     };
 
     const handleKicked = () => {
       alert("You have been removed from the room by the host.");
       handleLeaveRoom();
-    };
-
-    const handleRoomJoined = ({ isHost, isLocked }) => {
-      setIsHost(isHost);
-      setIsLocked(isLocked);
-      setIsWaiting(false); // Được phép vào phòng
-    };
-
-    const handleRoomLocked = ({ lock }) => {
-      setIsLocked(lock);
-      showToast(lock ? "🔒 Room locked by host" : "🔓 Room unlocked");
-    };
-
-    const handleRoomWaiting = () => {
-      setIsWaiting(true);
-    };
-
-    const handleRequestAsk = ({ email, id }) => {
-      setJoinRequests(prev => [...prev, { email, id }]);
-      showToast(`🔔 ${email} is asking to join`);
     };
 
     const handleRoomError = ({ message }) => {
@@ -656,11 +639,8 @@ const Room = () => {
     socket.on("peer:candidate", handleCandidate);
     socket.on("user:left", handleLeft);
     socket.on("host:status", handleHostStatus);
+    socket.on("room:locked", handleLockedStatus);
     socket.on("user:kicked", handleKicked);
-    socket.on("room:joined", handleRoomJoined);
-    socket.on("room:locked", handleRoomLocked);
-    socket.on("room:waiting", handleRoomWaiting);
-    socket.on("room:request-ask", handleRequestAsk);
     socket.on("room:error", handleRoomError);
 
     return () => {
@@ -670,11 +650,8 @@ const Room = () => {
       socket.off("peer:candidate", handleCandidate);
       socket.off("user:left", handleLeft);
       socket.off("host:status", handleHostStatus);
+      socket.off("room:locked", handleLockedStatus);
       socket.off("user:kicked", handleKicked);
-      socket.off("room:joined", handleRoomJoined);
-      socket.off("room:locked", handleRoomLocked);
-      socket.off("room:waiting", handleRoomWaiting);
-      socket.off("room:request-ask", handleRequestAsk);
       socket.off("room:error", handleRoomError);
     };
   }, [socket, createPeer]);
@@ -709,17 +686,22 @@ const Room = () => {
         <h1 style={{ fontSize: '1.2rem', margin: 0 }}>Room: {currentRoom} {isHost && <span style={{ fontSize: '0.8rem', color: '#ffd700', marginLeft: '5px' }}>⭐ Host</span>}</h1>
         {/* Responsive Header: Dùng flex-wrap để xuống dòng trên mobile */}
         <div className="connection-status" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center', gap: '8px' }}>
+          {isHost && (
+            <button
+              className={`btn-lock ${isLocked ? 'locked' : ''}`}
+              onClick={toggleLock}
+              title={isLocked ? 'Unlock Room' : 'Lock Room'}
+              style={{
+                backgroundColor: isLocked ? '#dc3545' : '#28a745',
+                border: 'none', color: 'white', padding: '4px 10px', borderRadius: '15px', cursor: 'pointer', fontSize: '0.8rem'
+              }}
+            >
+              {isLocked ? '🔒 Locked' : '🔓 Unlock'}
+            </button>
+          )}
           <span>👤 {myEmail}</span>
           <span>|</span>
           <span>👥 {remoteStreams.length + 1}</span>
-          {isHost && (
-            <button
-              className={`btn-leave ${isLocked ? 'locked' : ''}`}
-              onClick={toggleLock}
-              style={{ backgroundColor: isLocked ? '#6c757d' : '#28a745', color: 'white', marginLeft: '10px', borderRadius: '20px', padding: '8px 16px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-              {isLocked ? '🔒 Locked' : '🔓 Open'}
-            </button>
-          )}
           <button className="btn-leave" onClick={handleLeaveRoom} style={leaveBtnStyle}>📞 Leave</button>
         </div>
       </header>
@@ -780,34 +762,6 @@ const Room = () => {
           </div>
         </aside>
       </main>
-
-      {/* Waiting Room Overlay */}
-      {isWaiting && (
-        <div className="waiting-overlay">
-          <div className="waiting-card">
-            <div className="spinner-large"></div>
-            <h2>Asking to join...</h2>
-            <p>Please wait, the host will let you in soon.</p>
-            <button className="btn-leave" onClick={() => window.location.href = "/"}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      {/* Host Admission Panel */}
-      {isHost && joinRequests.length > 0 && (
-        <div className="admission-panel">
-          <h3>Join Requests</h3>
-          {joinRequests.map(req => (
-            <div key={req.id} className="request-item">
-              <span>{req.email}</span>
-              <div className="request-actions">
-                <button className="btn-admit" onClick={() => handleAdminDecision(req, true)}>Admit</button>
-                <button className="btn-deny" onClick={() => handleAdminDecision(req, false)}>Deny</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Toast Notifications Container */}
       <div className="toast-container">
